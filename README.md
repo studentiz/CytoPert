@@ -6,7 +6,7 @@
 
 ![Status](https://img.shields.io/badge/status-alpha-orange)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-Apache-2.0-blue)
 ![CLI](https://img.shields.io/badge/interface-CLI-6a5acd)
 
 </div>
@@ -180,4 +180,4 @@ pytest -q
 
 ## 📄 License
 
-MIT.
+Apache-2.0 license. See `LICENSE`.
