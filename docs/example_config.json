@@ -1,0 +1,44 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/.cytopert/workspace",
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "maxTokens": 8192,
+      "temperature": 0.3,
+      "maxToolIterations": 20
+    }
+  },
+  "providers": {
+    "openrouter": {
+      "apiKey": "sk-or-v1-YOUR_KEY",
+      "apiBase": "https://openrouter.ai/api/v1"
+    },
+    "openai": {
+      "apiKey": "",
+      "apiBase": null
+    },
+    "anthropic": {
+      "apiKey": "",
+      "apiBase": null
+    },
+    "deepseek": {
+      "apiKey": "",
+      "apiBase": null
+    },
+    "vllm": {
+      "apiKey": "dummy",
+      "apiBase": null
+    }
+  },
+  "data": {
+    "censusVersion": null,
+    "localH5adPath": null
+  },
+  "workflow": {
+    "nfatc1_mammary": {
+      "tissueFilter": ["mammary", "breast", "UBERON:0001911"],
+      "perturbationGenes": ["Nfatc1"],
+      "stateGroups": ["basal", "luminal", "stem"]
+    }
+  }
+}
