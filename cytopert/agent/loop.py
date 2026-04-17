@@ -212,6 +212,36 @@ class AgentLoop:
         self._backfill_evidence_store()
         self._register_default_tools()
 
+    @staticmethod
+    def _record_usage(session: Any, response: Any) -> None:
+        """Accumulate prompt / completion / cost into session.metadata.
+
+        Stored as a dict so a future ``cytopert sessions show`` (or the
+        existing ``cytopert status`` view) can break down spend by
+        session without re-reading the JSONL transcript. We never raise
+        from this helper -- bookkeeping must not crash a turn.
+        """
+        usage = getattr(response, "usage", None) or {}
+        cost_usd = getattr(response, "cost_usd", None)
+        if not usage and cost_usd is None:
+            return
+        try:
+            stats = session.metadata.setdefault(
+                "usage",
+                {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
+            )
+            stats["calls"] = int(stats.get("calls", 0)) + 1
+            stats["prompt_tokens"] = int(stats.get("prompt_tokens", 0)) + int(
+                usage.get("prompt_tokens", 0) or 0
+            )
+            stats["completion_tokens"] = int(stats.get("completion_tokens", 0)) + int(
+                usage.get("completion_tokens", 0) or 0
+            )
+            if cost_usd is not None:
+                stats["cost_usd"] = float(stats.get("cost_usd", 0.0)) + float(cost_usd)
+        except Exception as exc:
+            logger.debug("usage accounting failed: %s", exc)
+
     def _backfill_evidence_store(self) -> None:
         """Pre-populate the in-process evidence store from the persistent DB.
 
@@ -338,6 +368,9 @@ class AgentLoop:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
+            # Forced-tool-call branch reuses one chat call; record its
+            # usage so spend tracking stays consistent across paths.
+            self._record_usage(session, response)
             if response.finish_reason == "error" or (
                 response.content and response.content.startswith("Error calling LLM")
             ):
@@ -375,6 +408,10 @@ class AgentLoop:
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                 )
+                # Accumulate usage / cost into session metadata so the
+                # CLI ``status`` command (and downstream observability)
+                # can show per-session spend instead of black-boxing it.
+                self._record_usage(session, response)
                 if self.context_engine is not None and response.usage:
                     try:
                         self.context_engine.update_from_response(response.usage)
