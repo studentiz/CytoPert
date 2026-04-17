@@ -58,12 +58,25 @@ def get_config() -> dict[str, Any]:
 
 
 def _build_prompt(ctx: StageContext) -> str:
-    parts: list[str] = [ctx.research_question.strip() or
-                        "Run the standard single-cell DE workflow on the dataset described below."]
+    """Render the StageContext into a single LLM prompt string.
+
+    The function uses ``"".join(parts)`` and lays out its own newlines
+    explicitly (each segment carries its leading ``\\n\\n`` separators).
+    Bullet items in the data-config block MUST therefore each end with
+    a ``\\n`` -- otherwise they concatenate into a single line:
+    ``- a: 1- b: 2`` instead of one bullet per line. A regression test
+    in ``tests/test_generic_de_prompt.py`` pins the multi-line shape.
+    """
+    parts: list[str] = [
+        ctx.research_question.strip()
+        or "Run the standard single-cell DE workflow on the dataset described below."
+    ]
     if ctx.data_config:
         parts.append("\n\n## Dataset / contrast configuration\n")
         for k, v in ctx.data_config.items():
-            parts.append(f"- {k}: {v}")
+            # Trailing newline so successive bullets do not concatenate
+            # into a single line under "".join. See the docstring above.
+            parts.append(f"- {k}: {v}\n")
     if ctx.feedback:
         parts.append(f"\n\n## Experiment feedback from previous round\n{ctx.feedback}")
     parts.append(
