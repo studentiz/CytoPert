@@ -39,11 +39,19 @@ class MechanismLink(BaseModel):
 
 
 class MechanismChain(BaseModel):
-    """A mechanism chain candidate with verification readouts."""
+    """A mechanism chain candidate with verification readouts.
+
+    The ``status`` field mirrors the lifecycle column in the ``chains`` SQLite
+    table so callers can read both ``ChainStore.get(id)`` and ``ChainStore.list()``
+    without losing the proposed/supported/refuted/superseded state. It is
+    populated by ``ChainStore`` on read; default ``None`` lets callers
+    construct un-persisted chains without committing to a status.
+    """
 
     id: str = Field("", description="Chain identifier")
     links: list[MechanismLink] = Field(default_factory=list)
     summary: str = Field("", description="Short summary of the chain")
     verification_readout: str = Field("", description="Suggested experimental readout to test")
-    priority: str = Field("P2", description="Priority e.g. P1, P2")
+    priority: str = Field("P2", description="Priority e.g. P1, P2, P3")
+    status: str | None = Field(None, description="Lifecycle status mirrored from ChainStore")
     evidence_ids: list[str] = Field(default_factory=list, description="All evidence IDs cited")

@@ -18,6 +18,7 @@ Hermes-style learning loop additions (see [docs/overview.md] for the bigger pict
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -42,10 +43,30 @@ from cytopert.skills.manager import SkillsManager
 from cytopert.skills.tool import SkillManageTool, SkillsListTool, SkillViewTool
 from cytopert.utils.helpers import get_chains_dir, get_memory_dir, get_skills_dir, get_state_db_path
 
+logger = logging.getLogger(__name__)
+
 _REFLECTION_TRIGGERS = {
     "min_tool_calls": 5,
     "min_evidence_entries": 3,
 }
+
+# Backfill the in-process evidence_store with the most recent N entries from
+# the persistent EvidenceDB. Without this, a fresh AgentLoop would render an
+# empty Evidence Summary into the prompt even though a previous session had
+# produced data.
+_EVIDENCE_BACKFILL_LIMIT = 20
+
+# Keywords that mark the user's message as a "research conclusion" question
+# -- the only kind that should trigger the evidence gate. Keep the list
+# small and unambiguous; substring matching is intentional so e.g.
+# "differential expression" matches "differential".
+_RESEARCH_KEYWORDS = (
+    "gene list", "top genes", "differentially", "differential",
+    "rank genes", "pathway", "enrichment", "upregulated", "downregulated",
+    "up-regulated", "down-regulated", "fold change", "logfc", "lfc",
+    "p-value", "adjusted p", "padj", "fdr", "DE genes", "deg",
+    "perturbation distance", "trajectory", "cluster markers",
+)
 
 
 class AgentLoop:
@@ -62,11 +83,19 @@ class AgentLoop:
         evidence_db: EvidenceDB | None = None,
         chain_store: ChainStore | None = None,
         enable_reflection: bool = True,
+        max_tokens: int = 8192,
+        temperature: float = 0.3,
     ) -> None:
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
+        # These mirror the AgentDefaults config so config.json values for
+        # temperature / max_tokens actually reach provider.chat. The legacy
+        # call path passed neither and silently used LiteLLM's defaults
+        # (max_tokens=4096, temperature=0.7).
+        self.max_tokens = int(max_tokens)
+        self.temperature = float(temperature)
         self.context = ContextBuilder(workspace)
         self.sessions = SessionManager(workspace)
 
@@ -78,12 +107,29 @@ class AgentLoop:
 
         try:
             self.skills.install_bundled()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("install_bundled failed: %s", exc)
 
         self.tools = ToolRegistry()
         self._evidence_store: list[EvidenceEntry] = []
+        self._backfill_evidence_store()
         self._register_default_tools()
+
+    def _backfill_evidence_store(self) -> None:
+        """Pre-populate the in-process evidence store from the persistent DB.
+
+        ``build_evidence_summary`` reads exclusively from this list, so without
+        backfill a brand-new process would always render an empty Evidence
+        Summary even when EvidenceDB on disk has thousands of entries.
+        """
+        try:
+            recent = self.evidence_db.recent(limit=_EVIDENCE_BACKFILL_LIMIT)
+        except Exception as exc:
+            logger.warning("evidence_db.recent backfill failed: %s", exc)
+            return
+        # ``recent`` returns most-recent-first; reverse so the in-process
+        # store remains chronologically ordered for the summary tail slicing.
+        self._evidence_store.extend(reversed(recent))
 
     def _register_default_tools(self) -> None:
         """Wire built-in CytoPert tools into the registry.
@@ -107,14 +153,23 @@ class AgentLoop:
         self.tools.register(SkillViewTool(self.skills))
         self.tools.register(SkillManageTool(self.skills))
         self.tools.register(EvidenceSearchTool(self.evidence_db))
-        self.tools.register(ChainStatusTool(self.chains))
+        # Pass the MemoryStore so chain_status auto-appends a one-line
+        # summary to HYPOTHESIS_LOG.md on every transition.
+        self.tools.register(ChainStatusTool(self.chains, memory=self.memory))
 
     async def process_direct(
         self,
         content: str,
         session_key: str = "cli:direct",
+        user_feedback: str | None = None,
     ) -> str:
-        """Process a message directly (CLI or workflow). Returns the agent's text response."""
+        """Process a message directly (CLI or workflow). Returns the agent's text response.
+
+        ``user_feedback`` carries a structured wet-lab-feedback string from
+        ``cytopert agent --feedback`` / ``cytopert run-workflow --feedback``.
+        It is forwarded verbatim to the reflection turn so the reflection
+        LLM can decide whether to update memory or transition a chain.
+        """
         session = self.sessions.get_or_create(session_key)
         evidence_summary = (
             build_evidence_summary(self._evidence_store) if self._evidence_store else None
@@ -163,13 +218,16 @@ class AgentLoop:
                 messages=messages,
                 tools=tool_defs if tool_defs else None,
                 model=self.model,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
             )
             if response.finish_reason == "error" or (
                 response.content and response.content.startswith("Error calling LLM")
             ):
                 tool_msg = tool_results[-1] if tool_results else "No tool result."
                 final_content = (
-                    f"工具已执行，结果如下：\n{tool_msg}\n\nLLM 响应失败：{response.content}"
+                    "Tool executed; the LLM follow-up call failed.\n"
+                    f"Tool result:\n{tool_msg}\n\nLLM error: {response.content}"
                 )
             else:
                 final_content = response.content
@@ -181,6 +239,8 @@ class AgentLoop:
                     messages=messages,
                     tools=tool_defs if tool_defs else None,
                     model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
                 )
                 if response.has_tool_calls:
                     tools_used = True
@@ -212,11 +272,26 @@ class AgentLoop:
                     break
 
         if final_content is None:
-            final_content = "I completed processing but have no final response."
-        if not self._evidence_store and (
-            not tools_used or self._all_tool_results_errors(tool_results)
+            # max_iterations exhausted while the model kept asking for tools.
+            # Surface the truncation explicitly instead of returning a generic
+            # "no final response" string -- callers can distinguish "model
+            # finished" from "loop hit the iteration cap".
+            tail = tool_results[-1] if tool_results else "(no tool output captured)"
+            final_content = (
+                f"Reached the agent loop iteration limit ({self.max_iterations}) "
+                f"with no terminal model response. The most recent tool result was:\n\n{tail}\n\n"
+                "Re-run with a larger maxToolIterations or a more specific request."
+            )
+        if (
+            not self._evidence_store
+            and (not tools_used or self._all_tool_results_errors(tool_results))
+            and self._is_research_conclusion(content)
         ):
-            final_content = self._enforce_evidence_gate(final_content, tool_results)
+            # Append the data-request hint instead of replacing the model's
+            # reply: chitchat / meta questions get the model's actual answer,
+            # research questions get the model's answer plus the hint that
+            # without evidence the answer is not reproducible.
+            final_content = self._append_evidence_gate(final_content, tool_results)
 
         session.add_message("user", content)
         session.add_message("assistant", final_content)
@@ -231,9 +306,10 @@ class AgentLoop:
                     tool_calls_count=tool_calls_count,
                     chains_touched=chains_touched,
                     new_evidence_ids=new_evidence_ids,
+                    user_feedback=user_feedback,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("reflection failed: %s", exc)
 
         return final_content
 
@@ -253,8 +329,13 @@ class AgentLoop:
             try:
                 self.evidence_db.add(entry, session_id=session_key)
                 new_evidence_ids.append(entry.id)
-            except Exception:
-                pass
+            except Exception as exc:
+                # The in-memory store still has the entry, but persistence
+                # failed -- log so the divergence is visible instead of
+                # silently dropping the row.
+                logger.warning(
+                    "evidence_db.add failed for %s (%s): %s", entry.id, tool_name, exc
+                )
 
         if tool_name in {"chains", "chain_status"}:
             try:
@@ -262,8 +343,10 @@ class AgentLoop:
                 cid = payload.get("chain_id")
                 if cid:
                     chains_touched.append(cid)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            except (json.JSONDecodeError, TypeError) as exc:
+                logger.debug(
+                    "Could not parse chains/chain_status JSON to record chain_id: %s", exc
+                )
 
     async def _maybe_reflect(
         self,
@@ -273,6 +356,7 @@ class AgentLoop:
         tool_calls_count: int,
         chains_touched: list[str],
         new_evidence_ids: list[str],
+        user_feedback: str | None = None,
     ) -> None:
         from cytopert.agent.reflection import maybe_reflect
 
@@ -284,26 +368,53 @@ class AgentLoop:
             tool_calls_count=tool_calls_count,
             chains_touched=chains_touched,
             new_evidence_ids=new_evidence_ids,
+            user_feedback=user_feedback,
             triggers=_REFLECTION_TRIGGERS,
         )
 
-    def _enforce_evidence_gate(
+    def _append_evidence_gate(
         self, content: str | None, tool_results: list[str] | None = None
     ) -> str:
-        """If no evidence/tools were used, require data instead of speculative answers."""
-        errors = []
+        """Append a data-request hint to the model reply when evidence is empty.
+
+        Only fires when ``_is_research_conclusion`` matched the user message
+        AND no evidence was produced (or every tool returned an error). This
+        is appended -- not substituted -- so the model's actual answer is
+        preserved verbatim and the user only sees an extra advisory block.
+        """
+        errors: list[str] = []
         if tool_results:
             errors = [r for r in tool_results if r.strip().lower().startswith("error")]
-        error_msg = ""
+        head = (content or "").rstrip()
+        suffix_parts: list[str] = []
         if errors:
-            error_msg = "工具调用失败信息：\n- " + "\n- ".join(errors) + "\n\n"
-        return (
-            f"{error_msg}当前没有任何证据条目或数据来源，无法给出可靠的基因清单或上下调影响结论。\n"
-            "请提供以下之一，我再调用工具获取证据：\n"
-            "- 本地 h5ad 文件路径（含脓毒症相关样本与注释）\n"
-            "- 允许我使用 cellxgene Census，并提供组织/细胞类型/疾病筛选条件\n"
-            "如果你愿意，我也可以先调用 `census_query` 做数据探索（请给出过滤条件）。"
+            suffix_parts.append(
+                "Tool errors during this turn:\n- " + "\n- ".join(errors)
+            )
+        suffix_parts.append(
+            "No evidence entries are available yet, so any reproducible "
+            "gene list / pathway / up-or-down conclusion still needs data. "
+            "To produce real evidence you can:\n"
+            "  - share a local .h5ad path (with the relevant sample annotations),\n"
+            "  - allow me to call `census_query` with a tissue / cell-type / disease filter, or\n"
+            "  - point me at an existing evidence id via `evidence_search`."
         )
+        suffix = "\n\n---\n" + "\n\n".join(suffix_parts)
+        return f"{head}{suffix}" if head else suffix.lstrip("\n-")
+
+    @staticmethod
+    def _is_research_conclusion(message: str) -> bool:
+        """Return True iff the user is asking for a reproducible scientific result.
+
+        Greetings / capability questions / help text must not trigger the
+        evidence gate. We use a small substring whitelist of bioinformatics
+        terms; this is intentionally permissive on the no-side because
+        appending the data-request hint to a chitchat reply is jarring.
+        """
+        if not message:
+            return False
+        low = message.lower()
+        return any(k.lower() in low for k in _RESEARCH_KEYWORDS)
 
     @staticmethod
     def _all_tool_results_errors(results: list[str]) -> bool:

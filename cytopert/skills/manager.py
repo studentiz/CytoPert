@@ -16,6 +16,7 @@ the user promotes them with ``cytopert skills accept <name>``.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 SKILL_FILENAME = "SKILL.md"
 STAGED_DIR_NAME = ".staged"
@@ -71,14 +74,23 @@ class SkillsManager:
         self.staged_dir.mkdir(parents=True, exist_ok=True)
 
     def install_bundled(self, force: bool = False) -> int:
-        """Copy bundled SKILL.md sheets into the user skills dir on first run."""
+        """Copy bundled SKILL.md sheets into the user skills dir on first run.
+
+        The manifest file is only written after at least one skill is copied
+        successfully. The legacy implementation stamped the manifest even when
+        ``copied == 0`` (e.g. because the bundled package data was missing),
+        which caused subsequent runs to skip installation forever and the
+        researcher to see "no bundled skills" with no way to recover short of
+        ``rm ~/.cytopert/skills/.bundled_manifest``.
+        """
         manifest = self.skills_dir / BUNDLED_MANIFEST
         if manifest.exists() and not force:
             return 0
         copied = 0
         try:
             bundled_root = resources.files("cytopert.skills.bundled")
-        except (ModuleNotFoundError, FileNotFoundError):
+        except (ModuleNotFoundError, FileNotFoundError) as exc:
+            logger.warning("Bundled skills package data unavailable: %s", exc)
             return 0
         for category_dir in bundled_root.iterdir():
             if not category_dir.is_dir() or category_dir.name.startswith("_"):
@@ -97,7 +109,14 @@ class SkillsManager:
                     skill_path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
                 copied += 1
-        manifest.write_text(f"installed bundled skills: {copied}\n", encoding="utf-8")
+        if copied > 0 or force:
+            manifest.write_text(f"installed bundled skills: {copied}\n", encoding="utf-8")
+        else:
+            logger.warning(
+                "install_bundled copied 0 skills; not stamping manifest so the next "
+                "run will retry. Check that cytopert.skills.bundled is on the "
+                "wheel's package data."
+            )
         return copied
 
     def list(self, include_staged: bool = False) -> list[SkillMeta]:
@@ -268,7 +287,8 @@ class SkillsManager:
     def _parse_skill_file(self, path: Path, *, staged: bool) -> SkillMeta | None:
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
+            logger.warning("Could not read SKILL.md at %s: %s", path, exc)
             return None
         meta_dict, _ = parse_frontmatter(text)
         if not meta_dict:

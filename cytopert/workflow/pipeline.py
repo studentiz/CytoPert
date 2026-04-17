@@ -29,6 +29,11 @@ async def run_one_round(
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
+        # Match the cytopert agent CLI: thread temperature / max_tokens so
+        # config.json values reach the LLM call instead of LiteLLM's
+        # library defaults.
+        max_tokens=config.agents.defaults.max_tokens,
+        temperature=config.agents.defaults.temperature,
     )
     # Build initial message with research question and optional data config
     prompt = research_question

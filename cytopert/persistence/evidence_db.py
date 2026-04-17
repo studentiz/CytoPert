@@ -8,6 +8,7 @@ future sessions via FTS5 (summary / genes / pathways / tool_name / source).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime
@@ -16,6 +17,8 @@ from typing import Any
 
 from cytopert.data.models import EvidenceEntry, EvidenceType
 from cytopert.persistence.schema import ALL_DDL
+
+logger = logging.getLogger(__name__)
 
 
 def _serialize_list(value: list[str] | None) -> str:
@@ -29,8 +32,10 @@ def _deserialize_list(value: str | None) -> list[str]:
         out = json.loads(value)
         if isinstance(out, list):
             return [str(x) for x in out]
-    except (json.JSONDecodeError, TypeError):
-        pass
+    except (json.JSONDecodeError, TypeError) as exc:
+        # A bad JSON column would otherwise silently produce an empty list,
+        # making evidence look gene-less to the model. Surface the corruption.
+        logger.warning("Evidence column is not valid JSON: %s; raw=%r", exc, value[:80])
     return []
 
 

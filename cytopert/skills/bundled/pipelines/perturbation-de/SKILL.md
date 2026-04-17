@@ -28,5 +28,5 @@ metadata:
 - Don't average DE results across very different cell states — that's exactly what CytoPert is supposed to avoid.
 
 ## Verification
-- Top genes contain at least one gene already implicated in the relevant pathway (sanity check via `decoupler_enrichment`).
-- Evidence IDs returned by `evidence` reference `de_<dataset>_<group1>_<group2>_*`.
+- Top genes contain at least one gene already implicated in the relevant pathway (verify with the upcoming `pathway_lookup` tool once it lands; do not assume the legacy `decoupler_enrichment` tool is still registered).
+- Evidence IDs returned by `evidence` follow the live `tool_<tool_name>_<digest>` scheme (e.g. `tool_scanpy_de_3a4b5c6d7e`); always copy the id from the tool output instead of guessing a prefix like `de_*`.

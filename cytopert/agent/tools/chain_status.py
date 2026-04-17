@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from cytopert.agent.tools.base import Tool
+from cytopert.memory.store import MemoryStore
 from cytopert.persistence.chain_db import ChainStore
 from cytopert.persistence.schema import CHAIN_STATUSES
 
+logger = logging.getLogger(__name__)
+
 
 class ChainStatusTool(Tool):
-    """Transition a MechanismChain to a new status with evidence."""
+    """Transition a MechanismChain to a new status with evidence.
 
-    def __init__(self, store: ChainStore) -> None:
+    A successful transition also appends a one-line entry to the
+    ``hypothesis_log`` memory target so the latest status of every chain is
+    visible across sessions in ``HYPOTHESIS_LOG.md`` (matching the README's
+    "lifecycle is auditable everywhere" claim).
+    """
+
+    def __init__(self, store: ChainStore, memory: MemoryStore | None = None) -> None:
         self.store = store
+        self.memory = memory
 
     @property
     def name(self) -> str:
@@ -65,6 +76,32 @@ class ChainStatusTool(Tool):
             )
         except (KeyError, ValueError) as e:
             return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+        memory_logged = False
+        if self.memory is not None:
+            # Keep the entry compact -- HYPOTHESIS_LOG has a 3000-char budget
+            # and every chain transition writes exactly one line.
+            entry = f"{chain.id} -> {status}: {chain.summary[:80]}"
+            if note:
+                entry += f" | {note[:80]}"
+            try:
+                result = self.memory.add("hypothesis_log", entry)
+                memory_logged = bool(result.success)
+                if not result.success:
+                    # Hitting the memory budget is not a fatal error for the
+                    # status transition itself -- record it in the tool
+                    # response so the model can react (e.g. ask the user to
+                    # consolidate hypothesis_log) but do not raise.
+                    logger.warning(
+                        "chain_status: HYPOTHESIS_LOG add rejected for %s: %s",
+                        chain.id,
+                        result.message,
+                    )
+            except (ValueError, KeyError) as exc:
+                logger.warning(
+                    "chain_status: HYPOTHESIS_LOG add raised for %s: %s", chain.id, exc
+                )
+
         return json.dumps(
             {
                 "success": True,
@@ -72,6 +109,7 @@ class ChainStatusTool(Tool):
                 "status": status,
                 "evidence_ids": chain.evidence_ids,
                 "summary": chain.summary,
+                "hypothesis_log_updated": memory_logged,
             },
             ensure_ascii=False,
         )

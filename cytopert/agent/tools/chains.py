@@ -65,6 +65,14 @@ class ChainsTool(Tool):
                     "type": "string",
                     "description": "Optional suggested experimental readout to test the chain.",
                 },
+                "priority": {
+                    "type": "string",
+                    "enum": ["P1", "P2", "P3"],
+                    "description": (
+                        "Optional explicit priority. If omitted, defaults to P1 when "
+                        "there are >=2 supporting evidence ids, otherwise P2."
+                    ),
+                },
             },
             "required": ["summary", "evidence_ids"],
         }
@@ -76,6 +84,7 @@ class ChainsTool(Tool):
         chain_id: str | None = None,
         links: list[dict[str, Any]] | None = None,
         verification_readout: str | None = None,
+        priority: str | None = None,
     ) -> str:
         link_list = links or []
         mechanism_links = []
@@ -90,7 +99,14 @@ class ChainsTool(Tool):
                     evidence_ids=list(link_dict.get("evidence_ids", []) or []),
                 )
             )
-        priority = "P1" if len(evidence_ids) >= 2 else "P2"
+        # Caller-supplied priority wins; otherwise fall back to the
+        # historical >=2 evidence -> P1 heuristic so existing tests and
+        # SKILL.md examples keep their priorities.
+        if priority in {"P1", "P2", "P3"}:
+            chosen_priority = priority
+        else:
+            chosen_priority = "P1" if len(evidence_ids) >= 2 else "P2"
+        priority = chosen_priority
         chain = MechanismChain(
             id=chain_id or "",
             links=mechanism_links,

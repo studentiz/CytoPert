@@ -85,6 +85,15 @@ def onboard() -> None:
 def agent(
     message: str = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
     session_id: str = typer.Option("cli:default", "--session", "-s", help="Session ID"),
+    feedback: str | None = typer.Option(
+        None,
+        "--feedback",
+        "-f",
+        help=(
+            "Wet-lab or experiment feedback for this turn. Forwarded verbatim to the "
+            "reflection module so it can advance chain status / update memory."
+        ),
+    ),
 ) -> None:
     """Interact with the agent (interactive or single message)."""
     from cytopert.agent.loop import AgentLoop
@@ -110,10 +119,17 @@ def agent(
         workspace=config.workspace_path,
         model=model,
         max_iterations=config.agents.defaults.max_tool_iterations,
+        # Thread the configured generation defaults so config.json values
+        # for temperature / max_tokens actually reach provider.chat instead
+        # of silently falling back to LiteLLM's library defaults.
+        max_tokens=config.agents.defaults.max_tokens,
+        temperature=config.agents.defaults.temperature,
     )
     if message:
         async def run_once() -> None:
-            response = await agent_loop.process_direct(message, session_id)
+            response = await agent_loop.process_direct(
+                message, session_id, user_feedback=feedback
+            )
             console.print(f"\n{__logo__} {response}")
 
         asyncio.run(run_once())
@@ -135,7 +151,13 @@ def agent(
                         agent_loop.sessions.reset(session_id)
                         console.print("[green]✓[/green] Session cleared.")
                         continue
-                    response = await agent_loop.process_direct(user_input, session_id)
+                    # --feedback only applies to the first turn (matching
+                    # the workflow scenario semantics); subsequent
+                    # interactive turns leave it empty.
+                    response = await agent_loop.process_direct(
+                        user_input, session_id, user_feedback=feedback
+                    )
+                    feedback = None
                     console.print(f"\n{__logo__} {response}\n")
                 except KeyboardInterrupt:
                     console.print("\nGoodbye!")
@@ -194,6 +216,8 @@ def status() -> None:
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
     if config_path.exists():
         console.print(f"Model: {config.agents.defaults.model}")
+        provider_type = config.get_provider_type() or "[dim]not set[/dim]"
+        console.print(f"Provider: {provider_type}")
         has_key = bool(config.get_api_key())
         console.print(f"API key: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
 

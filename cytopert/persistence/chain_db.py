@@ -11,6 +11,7 @@ Events for every status transition are appended to:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime
@@ -20,17 +21,22 @@ from typing import Any
 from cytopert.data.models import MechanismChain, MechanismLink
 from cytopert.persistence.schema import ALL_DDL, CHAIN_STATUSES
 
+logger = logging.getLogger(__name__)
+
 
 def _serialize_links(links: list[MechanismLink]) -> str:
     return json.dumps([link.model_dump() for link in links], ensure_ascii=False)
 
 
-def _deserialize_links(value: str | None) -> list[MechanismLink]:
+def _deserialize_links(value: str | None, *, chain_id: str = "") -> list[MechanismLink]:
     if not value:
         return []
     try:
         data = json.loads(value)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as exc:
+        # Bad JSON in the column would otherwise silently produce an empty
+        # chain -- log so the corruption surfaces in a real run.
+        logger.warning("Chain %s links_json is not valid JSON: %s", chain_id or "?", exc)
         return []
     out: list[MechanismLink] = []
     for item in data if isinstance(data, list) else []:
@@ -44,9 +50,10 @@ def _row_to_chain(row: sqlite3.Row) -> MechanismChain:
         id=row["id"],
         summary=row["summary"] or "",
         priority=row["priority"] or "P2",
+        status=row["status"] or "proposed",
         verification_readout=row["verification_readout"] or "",
         evidence_ids=json.loads(row["evidence_ids_json"]) if row["evidence_ids_json"] else [],
-        links=_deserialize_links(row["links_json"]),
+        links=_deserialize_links(row["links_json"], chain_id=row["id"]),
     )
 
 
