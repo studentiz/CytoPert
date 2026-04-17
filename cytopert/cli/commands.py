@@ -25,11 +25,17 @@ plugins_app = typer.Typer(
     help="List / enable / disable CytoPert plugins (user, project, entry-points).",
     no_args_is_help=True,
 )
+config_app = typer.Typer(
+    name="config",
+    help="Quick get/set on individual config keys (no JSON editing required).",
+    no_args_is_help=True,
+)
 app.add_typer(memory_app, name="memory")
 app.add_typer(skills_app, name="skills")
 app.add_typer(chains_app, name="chains")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(plugins_app, name="plugins")
+app.add_typer(config_app, name="config")
 
 console = Console()
 
@@ -46,6 +52,14 @@ def main(
 ) -> None:
     """CytoPert - Interactive framework for cell perturbation mechanism parsing."""
     pass
+
+
+@app.command()
+def setup() -> None:
+    """Interactive first-time setup wizard (provider / key / model / workspace)."""
+    from cytopert.cli.setup_wizard import setup_command_callback
+
+    setup_command_callback()
 
 
 @app.command()
@@ -154,10 +168,15 @@ def agent(
 
         asyncio.run(run_once())
     else:
+        from cytopert.cli.interactive_slash import (
+            handle_slash_command,
+        )
+
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
         console.print(
-            "[dim]Commands: /exit, /quit, /reset (clear history), "
-            "/skip-plan (allow tool calls without 'go')[/dim]\n"
+            "[dim]Type /help for the full slash-command list. Plan-gate is "
+            "ON by default; reply 'go' (or 'execute' / 'approve') to "
+            "authorise tool calls in the next turn.[/dim]\n"
         )
         # Interactive sessions start in plan-then-execute mode: the first
         # turn produces a textual plan only and tool calls are gated until
@@ -172,31 +191,15 @@ def agent(
                     user_input = console.input("[bold blue]You:[/bold blue] ")
                     if not user_input.strip():
                         continue
-                    command = user_input.strip().lower()
-                    if command in {"/exit", "/quit"}:
-                        console.print("Goodbye!")
-                        break
-                    if command in {"/reset", "/new"}:
-                        agent_loop.sessions.reset(session_id)
-                        agent_loop.enable_plan_gate(session_id)
-                        if agent_loop.context_engine is not None:
-                            try:
-                                agent_loop.context_engine.on_session_reset()
-                            except Exception as exc:  # noqa: BLE001
-                                console.print(f"[yellow]ContextEngine reset failed: {exc}[/yellow]")
-                        console.print("[green]\u2713[/green] Session cleared; plan gate re-armed.")
-                        continue
-                    if command == "/skip-plan":
-                        sess = agent_loop.sessions.get_or_create(session_id)
-                        from cytopert.agent.loop import (
-                            PLAN_MODE_DISABLED,
-                            PLAN_MODE_KEY,
+                    if user_input.lstrip().startswith("/"):
+                        verdict = handle_slash_command(
+                            user_input, agent_loop, session_id, console
                         )
-
-                        sess.metadata[PLAN_MODE_KEY] = PLAN_MODE_DISABLED
-                        agent_loop.sessions.save(sess)
-                        console.print("[green]\u2713[/green] Plan gate disabled for this session.")
-                        continue
+                        if verdict == "exit":
+                            break
+                        if verdict == "handled":
+                            continue
+                        # verdict == "passthrough": fall through to LLM
                     # --feedback only applies to the first turn (matching
                     # the workflow scenario semantics); subsequent
                     # interactive turns leave it empty.
@@ -326,6 +329,140 @@ def status() -> None:
         chars, limit = memory.usage(target)
         pct = int(round(100.0 * chars / limit)) if limit else 0
         console.print(rf"Memory\[{target}]: {chars}/{limit} chars ({pct}%)")
+
+
+@app.command()
+def doctor(
+    ping: bool = typer.Option(
+        False,
+        "--ping",
+        help="Also issue a 1-token LLM round-trip; off by default to save tokens.",
+    ),
+) -> None:
+    """Run end-to-end health checks on the CytoPert install."""
+    from cytopert.cli.doctor import run_doctor
+
+    exit_code = run_doctor(ping=ping)
+    raise typer.Exit(exit_code)
+
+
+@app.command()
+def model(
+    name: str = typer.Argument(
+        None,
+        help="New default model. Omit to print the current model + suggestions.",
+    ),
+) -> None:
+    """Show or persist the default model used by ``cytopert agent``."""
+    from cytopert.cli.setup_wizard import PROVIDER_MODELS
+    from cytopert.config.loader import load_config, save_config
+
+    cfg = load_config()
+    if name is None:
+        console.print(f"Current model: [bold]{cfg.agents.defaults.model}[/bold]")
+        provider = cfg.get_provider_type() or "openrouter"
+        suggestions = PROVIDER_MODELS.get(provider, [])
+        if suggestions:
+            console.print(f"\nSuggested models for provider [cyan]{provider}[/cyan]:")
+            for s in suggestions:
+                marker = " (current)" if s == cfg.agents.defaults.model else ""
+                console.print(f"  - {s}{marker}")
+        return
+    cfg.agents.defaults.model = name
+    save_config(cfg)
+    console.print(f"[green]\u2713[/green] Default model set to [bold]{name}[/bold].")
+
+
+def _split_dotted(path: str) -> list[str]:
+    """Split a dotted config path; rejects empty segments."""
+    parts = [p for p in path.split(".") if p]
+    if not parts:
+        raise typer.BadParameter("Path must be non-empty (e.g. agents.defaults.model)")
+    return parts
+
+
+def _get_dotted(data: object, parts: list[str]) -> object:
+    cur: object = data
+    for p in parts:
+        if not isinstance(cur, dict) or p not in cur:
+            raise KeyError(".".join(parts))
+        cur = cur[p]
+    return cur
+
+
+def _set_dotted(data: dict, parts: list[str], value: object) -> None:
+    cur: dict = data
+    for p in parts[:-1]:
+        nxt = cur.get(p)
+        if not isinstance(nxt, dict):
+            cur[p] = {}
+            nxt = cur[p]
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _coerce_value(raw: str) -> object:
+    """Parse a CLI-supplied value as JSON when possible; fall back to str."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+@config_app.command("get")
+def config_get(path: str = typer.Argument(..., help="Dotted config path")) -> None:
+    """Print the current value at ``path`` (e.g. agents.defaults.model)."""
+    from cytopert.config.loader import get_config_path
+    parts = _split_dotted(path)
+    cfg_path = get_config_path()
+    if not cfg_path.exists():
+        console.print(f"[red]No config at {cfg_path}; run cytopert setup first.[/red]")
+        raise typer.Exit(1)
+    with open(cfg_path, encoding="utf-8") as f:
+        data = json.load(f)
+    try:
+        value = _get_dotted(data, parts)
+    except KeyError:
+        console.print(f"[red]No such key: {path}[/red]")
+        raise typer.Exit(2) from None
+    if isinstance(value, (dict, list)):
+        console.print(json.dumps(value, indent=2, ensure_ascii=False))
+    else:
+        console.print(value)
+
+
+@config_app.command("set")
+def config_set(
+    path: str = typer.Argument(..., help="Dotted config path"),
+    value: str = typer.Argument(..., help="New value (parsed as JSON when possible)"),
+) -> None:
+    """Set the value at ``path`` and re-validate the resulting config."""
+    from cytopert.config.loader import get_config_path
+    from cytopert.config.schema import Config
+
+    parts = _split_dotted(path)
+    cfg_path = get_config_path()
+    if cfg_path.exists():
+        with open(cfg_path, encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+    parsed = _coerce_value(value)
+    _set_dotted(data, parts, parsed)
+    # Re-validate by round-tripping through the Pydantic schema.
+    from cytopert.config.loader import _convert_keys, _convert_to_camel
+    try:
+        Config.model_validate(_convert_keys(data))
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Resulting config is invalid: {exc}[/red]")
+        raise typer.Exit(2) from None
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(_convert_to_camel(data), f, indent=2)
+    console.print(
+        f"[green]\u2713[/green] Set [bold]{path}[/bold] = "
+        f"{json.dumps(parsed, ensure_ascii=False)}"
+    )
 
 
 # ---------------------------------------------------------------------------
