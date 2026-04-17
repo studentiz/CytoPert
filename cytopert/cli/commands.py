@@ -83,7 +83,11 @@ def onboard() -> None:
     console.print("  1. Add your API key to [cyan]~/.cytopert/config.json[/cyan]")
     console.print("     (e.g. providers.openrouter.apiKey from https://openrouter.ai/keys)")
     console.print("  2. Chat: [cyan]cytopert agent -m \"Your question\"[/cyan]")
-    console.print("  3. Run a workflow: [cyan]cytopert run-workflow nfatc1_mammary[/cyan]")
+    console.print(
+        "  3. Run a bundled example workflow: "
+        "[cyan]cytopert run-workflow <scenario>[/cyan] "
+        "(see [cyan]cytopert run-workflow --help[/cyan] for the registered names)."
+    )
     console.print("  4. Inspect learnings: [cyan]cytopert memory show / cytopert skills list[/cyan]")
 
 

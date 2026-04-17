@@ -21,6 +21,8 @@ CytoPert wraps the standard single-cell perturbation stack (scanpy, pertpy, deco
 
 The same gene knockout can drive opposite outcomes in different cell states; the same stimulus pushes resting and effector T cells in opposite directions. Keeping that nuance straight by hand — flipping between notebooks, EndNote, and slides — gets exhausting fast. CytoPert exists to make that bookkeeping the agent's job.
 
+CytoPert is **domain-agnostic**. The walkthrough and `nfatc1_mammary` workflow below happen to use a mammary-development example because it is a clean, reproducible scenario, but nothing in the codebase, prompts, or tool surface assumes a specific tissue, organism, perturbation modality, or disease. Plug in any organ / perturbation / disease by registering your own scenario or by talking to the agent directly.
+
 ## Design
 
 Three things separate CytoPert from a regular chat interface.

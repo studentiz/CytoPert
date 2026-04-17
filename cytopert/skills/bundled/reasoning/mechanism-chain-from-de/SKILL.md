@@ -19,7 +19,7 @@ metadata:
 1. Call `evidence` to refresh the evidence summary; identify entries by their real ids returned by previous tool calls. Live ids follow the `tool_<tool_name>_<digest>` scheme (e.g. `tool_scanpy_de_3a4b5c6d7e`); never invent a `de_*` / `path_*` prefix.
 2. Compose links upstream → downstream:
    - `(perturbation gene) -> (TF / pathway from enrichment)` with relation `regulates` / `activates` / `represses`.
-   - `(pathway) -> (state-specific readout, e.g. luminal differentiation)` with relation `drives` / `biases`.
+   - `(pathway) -> (state-specific readout)` with relation `drives` / `biases`. The state readout can be any cell-state phenotype the researcher is investigating (differentiation outcome, activation marker shift, trajectory branch choice, ...) — adapt to the dataset, do not hard-code a specific tissue.
 3. Call `chains summary="..." links=[...] evidence_ids=["tool_scanpy_de_..."]`. Record the returned chain id.
 4. Persist the lifecycle: `chain_status chain_id=<id> status=proposed evidence_ids=[...] note="initial draft"`. The chain_status tool now also auto-appends a one-line entry to `HYPOTHESIS_LOG.md` so you do not need a separate `memory.add` call for the lifecycle line.
 

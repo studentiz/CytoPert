@@ -1,9 +1,12 @@
 # Workflows
 
 A workflow scenario wraps an opinionated multi-step analysis around the
-agent loop. Today the only built-in scenario is `nfatc1_mammary`; the
-pluggable `Stage` / `Pipeline` registry that will let third-party packages
-register their own scenarios lands in stage 7.1.
+agent loop. CytoPert itself is **domain-agnostic** — it does not assume
+any particular tissue, organism, perturbation modality, or disease. The
+bundled `nfatc1_mammary` is a *reproducible example*, not a default; you
+should register your own scenario for any project that does not happen to
+be NFATC1 in mammary cells. The pluggable `Stage` / `Pipeline` registry
+(stage 7.1) is what makes that registration possible.
 
 A scenario typically:
 
@@ -19,9 +22,13 @@ A scenario typically:
 into the provider call, so config values actually reach the LLM (this was
 silently dropped in earlier alphas).
 
-## `nfatc1_mammary`
+## `nfatc1_mammary` (bundled example)
 
-Mammary development perturbation example.
+A reproducible mammary-development perturbation example. **Use it to
+sanity-check the install or as a template; do not assume CytoPert is
+specific to NFATC1, mammary tissue, or breast biology.** Other
+perturbations / tissues / organisms are first-class — just register a
+new scenario via `register_scenario(...)`.
 
 ```bash
 cytopert run-workflow nfatc1_mammary
