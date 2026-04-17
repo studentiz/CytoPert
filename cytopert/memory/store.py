@@ -101,9 +101,6 @@ class MemoryStore:
             return ""
         return path.read_text(encoding="utf-8")
 
-    def read_all(self) -> dict[str, str]:
-        return {t: self.read(t) for t in MEMORY_TARGETS}
-
     def entries(self, target: str) -> list[str]:
         raw = self.read(target).strip()
         if not raw:

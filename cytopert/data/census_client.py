@@ -1,4 +1,9 @@
-"""Client for cellxgene_census: open_soma, get_anndata, get_obs, get_var."""
+"""Thin async-friendly wrappers around cellxgene-census APIs.
+
+Provides ``open_census`` / ``get_anndata`` / ``get_obs`` / ``load_local_h5ad``.
+The unused ``get_var`` wrapper was removed in stage 1; reintroduce it only
+when a tool actually consumes per-gene metadata.
+"""
 
 from pathlib import Path
 from typing import Any
@@ -68,26 +73,6 @@ def get_obs(
             kwargs["coords"] = coords
         with open_census(census_version) as census:
             return cellxgene_census.get_obs(census=census, organism=organism, **kwargs)
-    except ImportError as e:
-        raise ImportError("cellxgene_census is required.") from e
-
-
-def get_var(
-    var_value_filter: str | None = None,
-    column_names: list[str] | None = None,
-    census_version: str | None = None,
-    organism: str = "Homo sapiens",
-):
-    """Get gene (var) metadata from Census."""
-    try:
-        import cellxgene_census
-        kwargs: dict[str, Any] = {}
-        if var_value_filter:
-            kwargs["value_filter"] = var_value_filter
-        if column_names:
-            kwargs["column_names"] = column_names
-        with open_census(census_version) as census:
-            return cellxgene_census.get_var(census=census, organism=organism, **kwargs)
     except ImportError as e:
         raise ImportError("cellxgene_census is required.") from e
 

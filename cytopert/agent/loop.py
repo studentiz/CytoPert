@@ -26,14 +26,8 @@ from cytopert.agent.context import ContextBuilder
 from cytopert.agent.tools.census import CensusQueryTool, LoadLocalH5adTool
 from cytopert.agent.tools.chain_status import ChainStatusTool
 from cytopert.agent.tools.chains import ChainsTool
-from cytopert.agent.tools.decoupler_tools import DecouplerEnrichmentTool
 from cytopert.agent.tools.evidence import EvidenceTool
 from cytopert.agent.tools.evidence_search import EvidenceSearchTool
-from cytopert.agent.tools.pathway import PathwayCheckTool, PathwayConstraintTool
-from cytopert.agent.tools.pertpy_tools import (
-    PertpyDifferentialResponseTool,
-    PertpyPerturbationDistanceTool,
-)
 from cytopert.agent.tools.registry import ToolRegistry
 from cytopert.agent.tools.scanpy_tools import ScanpyClusterTool, ScanpyDETool, ScanpyPreprocessTool
 from cytopert.data.evidence_builder import build_evidence_summary, record_tool_evidence
@@ -92,18 +86,21 @@ class AgentLoop:
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
-        """Register census, evidence, scverse, memory, skills, evidence_search, chain_status."""
+        """Wire built-in CytoPert tools into the registry.
+
+        Stub tools removed in stage 1: pertpy_perturbation_distance,
+        pertpy_differential_response, decoupler_enrichment, pathway_check,
+        pathway_constraint. Those tools advertised analysis capabilities the
+        underlying handlers never delivered. See docs/hermes-borrowing.md
+        and the stage 1 commit for context. The pathway_lookup tool added
+        in stage 7.2 will replace the pathway_* surface.
+        """
         self.tools.register(CensusQueryTool())
         self.tools.register(LoadLocalH5adTool())
         self.tools.register(EvidenceTool(evidence_store=self._evidence_store))
         self.tools.register(ScanpyPreprocessTool(self.workspace))
         self.tools.register(ScanpyClusterTool(self.workspace))
         self.tools.register(ScanpyDETool())
-        self.tools.register(PertpyPerturbationDistanceTool(self.workspace))
-        self.tools.register(PertpyDifferentialResponseTool())
-        self.tools.register(DecouplerEnrichmentTool(self.workspace))
-        self.tools.register(PathwayConstraintTool())
-        self.tools.register(PathwayCheckTool())
         self.tools.register(ChainsTool(store=self.chains))
         self.tools.register(MemoryTool(self.memory))
         self.tools.register(SkillsListTool(self.skills))
@@ -393,13 +390,3 @@ class AgentLoop:
         value = re.sub(r"\([^\)]*\)$", "", value).strip()
         return value or None
 
-    @staticmethod
-    def _looks_like_data_request(text: str) -> bool:
-        """Heuristic to see if the model already asked for data."""
-        if not text:
-            return False
-        keywords = [
-            "请提供", "需要", "数据", "h5ad", "cellxgene", "census", "过滤",
-            "允许我", "权限", "dataset", "数据集",
-        ]
-        return any(k in text for k in keywords)
