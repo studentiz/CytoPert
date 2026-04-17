@@ -168,9 +168,23 @@ def agent(
 
         asyncio.run(run_once())
     else:
-        from cytopert.cli.interactive_slash import (
-            handle_slash_command,
-        )
+        # Interactive shell: prompt_toolkit when available (full TUI:
+        # multiline, slash autocomplete, history, streaming, status
+        # line, Ctrl+C cancel-then-exit). Falls back to the basic
+        # rich.console loop if prompt_toolkit is missing for any
+        # reason (allows the agent to run in dependency-stripped CI).
+        from cytopert.cli.interactive_slash import handle_slash_command
+
+        try:
+            from cytopert.cli.interactive import run_prompt_toolkit_shell
+
+            asyncio.run(run_prompt_toolkit_shell(agent_loop, session_id, feedback))
+            return
+        except ImportError as exc:
+            console.print(
+                f"[yellow]prompt_toolkit unavailable ({exc}); "
+                "falling back to the basic shell.[/yellow]"
+            )
 
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
         console.print(

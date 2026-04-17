@@ -32,6 +32,11 @@ dependencies = [
     "loguru>=0.7.0",
     "rich>=13.0.0",
     "litellm>=1.0.0",
+    # Stage 11: prompt_toolkit powers the interactive shell (multiline,
+    # history, slash autocomplete, bottom toolbar, Ctrl+C cancel-then-
+    # exit). Pure Python, MIT, no compiled extensions. The CLI degrades
+    # gracefully to a rich.console loop if prompt_toolkit is missing.
+    "prompt_toolkit>=3.0",
 ]
 
 [project.optional-dependencies]

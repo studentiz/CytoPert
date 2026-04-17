@@ -17,9 +17,11 @@ Hermes-style learning loop additions (see [docs/overview.md] for the bigger pict
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +238,32 @@ class AgentLoop:
             except Exception as exc:
                 logger.warning("plugin setup_all failed: %s", exc)
 
+    async def _provider_chat(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        stream_callback: Callable[[str], None] | None,
+    ) -> Any:
+        """Call ``self.provider.chat`` with optional kwargs filtered out.
+
+        Older / third-party LLMProvider implementations may not yet
+        accept the stream_callback kwarg added in stage 11. Forward it
+        only when set so existing fakes / providers stay compatible
+        with the AgentLoop without being forced to widen their
+        signature.
+        """
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "tools": tools,
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+        if stream_callback is not None:
+            kwargs["stream_callback"] = stream_callback
+        return await self.provider.chat(**kwargs)
+
     @staticmethod
     def _record_usage(session: Any, response: Any) -> None:
         """Accumulate prompt / completion / cost into session.metadata.
@@ -325,6 +353,10 @@ class AgentLoop:
         content: str,
         session_key: str = "cli:direct",
         user_feedback: str | None = None,
+        *,
+        stream_callback: Callable[[str], None] | None = None,
+        interrupt_event: asyncio.Event | None = None,
+        on_tool_event: Callable[[str, str, str], None] | None = None,
     ) -> str:
         """Process a message directly (CLI or workflow). Returns the agent's text response.
 
@@ -332,6 +364,21 @@ class AgentLoop:
         ``cytopert agent --feedback`` / ``cytopert run-workflow --feedback``.
         It is forwarded verbatim to the reflection turn so the reflection
         LLM can decide whether to update memory or transition a chain.
+
+        ``stream_callback(text_delta)`` opts into incremental delivery of
+        the assistant text; the AgentLoop forwards it to
+        ``provider.chat`` for every iteration. Tool-call deltas are not
+        streamed (LiteLLM emits them as partial JSON which is not
+        meaningful to render).
+
+        ``interrupt_event`` -- when set, the AgentLoop exits the tool
+        iteration loop cleanly between iterations and returns a
+        "Cancelled" final_content. Used by the prompt_toolkit shell to
+        implement Ctrl+C interrupt-and-redirect.
+
+        ``on_tool_event(kind, name, payload)`` is invoked for each tool
+        round-trip with kind in {"start", "result"}. The shell uses it
+        to render "calling tool: ..." placeholders mid-stream.
         """
         session = self.sessions.get_or_create(session_key)
         if self.context_engine is not None:
@@ -397,12 +444,16 @@ class AgentLoop:
             self._record_side_effects(tool_name, params, result, session_key,
                                       chains_touched, new_evidence_ids)
             messages = self.context.add_tool_result(messages, "forced_tool_call", tool_name, result)
-            response = await self.provider.chat(
+            if on_tool_event is not None:
+                try:
+                    on_tool_event("start", tool_name, json.dumps(params)[:80])
+                    on_tool_event("result", tool_name, str(result)[:120])
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("on_tool_event raised: %s", exc)
+            response = await self._provider_chat(
                 messages=messages,
                 tools=tool_defs if tool_defs else None,
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
+                stream_callback=stream_callback,
             )
             # Forced-tool-call branch reuses one chat call; record its
             # usage so spend tracking stays consistent across paths.
@@ -420,6 +471,15 @@ class AgentLoop:
         else:
             while iteration < self.max_iterations:
                 iteration += 1
+                # Cooperative cancellation: a Ctrl+C in the prompt_toolkit
+                # shell flips ``interrupt_event``; we surface a cancelled
+                # final_content rather than half-running another tool round.
+                if interrupt_event is not None and interrupt_event.is_set():
+                    final_content = (
+                        "[Cancelled] User interrupted; the agent stopped before "
+                        f"iteration {iteration}."
+                    )
+                    break
                 # Pre-call compaction: ask the engine whether to run a
                 # post-call compression decision after the next response.
                 # We always offer the engine a peek at the messages before
@@ -437,12 +497,10 @@ class AgentLoop:
                 tool_defs = (
                     [] if plan_active else self.tools.get_definitions()
                 )
-                response = await self.provider.chat(
+                response = await self._provider_chat(
                     messages=messages,
                     tools=tool_defs if tool_defs else None,
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
+                    stream_callback=stream_callback,
                 )
                 # Accumulate usage / cost into session metadata so the
                 # CLI ``status`` command (and downstream observability)
@@ -481,7 +539,21 @@ class AgentLoop:
                         messages, response.content, tool_call_dicts
                     )
                     for tool_call in response.tool_calls:
+                        if on_tool_event is not None:
+                            try:
+                                on_tool_event(
+                                    "start",
+                                    tool_call.name,
+                                    json.dumps(tool_call.arguments)[:80],
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug("on_tool_event(start) raised: %s", exc)
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        if on_tool_event is not None:
+                            try:
+                                on_tool_event("result", tool_call.name, str(result)[:120])
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug("on_tool_event(result) raised: %s", exc)
                         tool_results.append(result)
                         tool_calls_count += 1
                         self._record_side_effects(tool_call.name, tool_call.arguments, result,

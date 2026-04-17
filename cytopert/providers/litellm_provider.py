@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import litellm
@@ -221,7 +221,24 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         api_base: str | None = None,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> LLMResponse:
+        # Streaming path: ask litellm to stream chunks, accumulate them,
+        # invoke ``stream_callback`` for every text fragment, and return
+        # the assembled LLMResponse so the caller's iteration loop is
+        # unchanged. Tool-call deltas are gathered in
+        # ``stream_chunk_builder`` form because LiteLLM splits a single
+        # tool_call across multiple chunks.
+        if stream_callback is not None:
+            return await self._chat_streaming(
+                messages=messages,
+                tools=tools,
+                model=model or self.default_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                api_base=api_base,
+                stream_callback=stream_callback,
+            )
         kwargs = self._build_kwargs(
             messages=messages,
             tools=tools,
@@ -243,6 +260,79 @@ class LiteLLMProvider(LLMProvider):
             finish_reason=getattr(choice, "finish_reason", None) or "stop",
             usage=self._parse_usage(response),
             cost_usd=self._safe_completion_cost(response),
+        )
+
+    async def _chat_streaming(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        api_base: str | None,
+        stream_callback: Callable[[str], None],
+    ) -> LLMResponse:
+        """Streamed equivalent of ``chat`` -- accumulate then return one response."""
+        kwargs = self._build_kwargs(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            api_base=api_base,
+            stream=True,
+        )
+        try:
+            stream = await acompletion(**kwargs)
+        except Exception as exc:
+            return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+
+        chunks: list[Any] = []
+        try:
+            async for chunk in stream:
+                chunks.append(chunk)
+                # Surface every assistant-text fragment to the caller as
+                # soon as it arrives. We do not surface tool_call deltas
+                # because they are typically partial JSON that would not
+                # render meaningfully in a TUI.
+                choices = getattr(chunk, "choices", []) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None) or getattr(choice, "message", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if content:
+                    try:
+                        stream_callback(content)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("stream_callback raised: %s", exc)
+        except Exception as exc:
+            return LLMResponse(content=f"Error during streaming: {exc}", finish_reason="error")
+
+        # Re-assemble the streamed chunks into a single ChatCompletion
+        # using LiteLLM's helper so tool_calls + usage + cost reach the
+        # caller in the same shape the non-stream path returns.
+        try:
+            assembled = litellm.stream_chunk_builder(chunks, messages=messages)
+        except Exception as exc:
+            logger.debug("stream_chunk_builder failed: %s; falling back", exc)
+            assembled = None
+        if assembled is None:
+            text = "".join(
+                getattr(getattr(c.choices[0], "delta", None), "content", "") or ""
+                for c in chunks
+                if getattr(c, "choices", None)
+            )
+            return LLMResponse(content=text, finish_reason="stop")
+        choice = assembled.choices[0]
+        message = choice.message
+        return LLMResponse(
+            content=getattr(message, "content", None),
+            tool_calls=self._coerce_tool_calls(message),
+            finish_reason=getattr(choice, "finish_reason", None) or "stop",
+            usage=self._parse_usage(assembled),
+            cost_usd=self._safe_completion_cost(assembled),
         )
 
     async def stream(

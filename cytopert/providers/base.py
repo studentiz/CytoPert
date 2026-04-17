@@ -19,7 +19,7 @@ default raising ``NotImplementedError``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,12 +83,22 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         api_base: str | None = None,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> LLMResponse:
         """Send a chat completion request. Returns LLMResponse with content and/or tool_calls.
 
         ``api_base`` lets callers override the provider's default base
         URL on a per-call basis (useful when a single LiteLLM provider
         instance routes to multiple vLLM workers).
+
+        ``stream_callback`` opts into incremental delivery: when set,
+        the provider streams the response in chunks and invokes
+        ``stream_callback(text_delta)`` for every assistant-text
+        fragment. The final ``LLMResponse`` returned contains the
+        accumulated content + tool calls. Concrete providers that do
+        not implement streaming may ignore the callback (and document
+        the fact); the stage-6 LiteLLMProvider honours it via
+        ``litellm.acompletion(stream=True)``.
         """
 
     @abstractmethod
