@@ -31,14 +31,20 @@ from cytopert.agent.tools.chain_status import ChainStatusTool
 from cytopert.agent.tools.chains import ChainsTool
 from cytopert.agent.tools.evidence import EvidenceTool
 from cytopert.agent.tools.evidence_search import EvidenceSearchTool
+from cytopert.agent.tools.pathway_lookup import PathwayLookupTool
 from cytopert.agent.tools.registry import ToolRegistry
-from cytopert.agent.tools.scanpy_tools import ScanpyClusterTool, ScanpyDETool, ScanpyPreprocessTool
+from cytopert.agent.tools.scanpy_tools import (
+    ScanpyClusterTool,
+    ScanpyDETool,
+    ScanpyPreprocessTool,
+)
 from cytopert.data.evidence_builder import build_evidence_summary, record_tool_evidence
 from cytopert.data.models import EvidenceEntry
 from cytopert.memory.store import MemoryStore
 from cytopert.memory.tool import MemoryTool
 from cytopert.persistence.chain_db import ChainStore
 from cytopert.persistence.evidence_db import EvidenceDB
+from cytopert.plugins.manager import PluginContext, PluginInfo, PluginManager
 from cytopert.providers.base import LLMProvider
 from cytopert.session.manager import SessionManager
 from cytopert.skills.manager import SkillsManager
@@ -173,6 +179,9 @@ class AgentLoop:
         max_tokens: int = 8192,
         temperature: float = 0.3,
         context_engine: ContextEngine | None = None,
+        save_trajectory: bool = False,
+        plugin_manager: PluginManager | None = None,
+        load_plugins: bool = True,
     ) -> None:
         self.provider = provider
         self.workspace = workspace
@@ -201,6 +210,10 @@ class AgentLoop:
         self.context_engine: ContextEngine | None = context_engine or CytoPertCompressor(
             provider=self.provider, model=self.model
         )
+        # Trajectory recording is opt-in; the CLI exposes this via
+        # `cytopert agent --save-trajectory` so casual sessions do not
+        # quietly accumulate JSONL files in ~/.cytopert/trajectories/.
+        self.save_trajectory = bool(save_trajectory)
 
         try:
             self.skills.install_bundled()
@@ -211,6 +224,17 @@ class AgentLoop:
         self._evidence_store: list[EvidenceEntry] = []
         self._backfill_evidence_store()
         self._register_default_tools()
+        self.plugin_manager: PluginManager | None = (
+            plugin_manager if plugin_manager is not None else (
+                PluginManager(project_dir=Path.cwd()) if load_plugins else None
+            )
+        )
+        self.plugins: list[PluginInfo] = []
+        if self.plugin_manager is not None:
+            try:
+                self.plugins = self.plugin_manager.setup_all(self._build_plugin_ctx)
+            except Exception as exc:
+                logger.warning("plugin setup_all failed: %s", exc)
 
     @staticmethod
     def _record_usage(session: Any, response: Any) -> None:
@@ -241,6 +265,17 @@ class AgentLoop:
                 stats["cost_usd"] = float(stats.get("cost_usd", 0.0)) + float(cost_usd)
         except Exception as exc:
             logger.debug("usage accounting failed: %s", exc)
+
+    def _build_plugin_ctx(self, info: PluginInfo) -> PluginContext:
+        """Construct the PluginContext handed to a plugin setup() call."""
+        return PluginContext(
+            info=info,
+            registry=self.tools,
+            workspace=self.workspace,
+            evidence_db=self.evidence_db,
+            memory=self.memory,
+            chain_store=self.chains,
+        )
 
     def _backfill_evidence_store(self) -> None:
         """Pre-populate the in-process evidence store from the persistent DB.
@@ -274,6 +309,7 @@ class AgentLoop:
         self.tools.register(ScanpyPreprocessTool(self.workspace))
         self.tools.register(ScanpyClusterTool(self.workspace))
         self.tools.register(ScanpyDETool())
+        self.tools.register(PathwayLookupTool())
         self.tools.register(ChainsTool(store=self.chains))
         self.tools.register(MemoryTool(self.memory))
         self.tools.register(SkillsListTool(self.skills))
@@ -508,6 +544,24 @@ class AgentLoop:
                 )
             except Exception as exc:
                 logger.warning("reflection failed: %s", exc)
+
+        if self.save_trajectory:
+            try:
+                from cytopert.agent.trajectory import (
+                    convert_session_to_sharegpt,
+                    save_trajectory,
+                )
+
+                save_trajectory(
+                    convert_session_to_sharegpt(session),
+                    model=self.model,
+                    completed=True,
+                    evidence_ids=new_evidence_ids,
+                    chains_touched=chains_touched,
+                    session_key=session_key,
+                )
+            except Exception as exc:
+                logger.warning("trajectory save failed: %s", exc)
 
         return final_content
 

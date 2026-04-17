@@ -20,10 +20,16 @@ memory_app = typer.Typer(name="memory", help="Manage CytoPert persistent memory.
 skills_app = typer.Typer(name="skills", help="Manage CytoPert procedural skills.", no_args_is_help=True)
 chains_app = typer.Typer(name="chains", help="Inspect mechanism chain lifecycle.", no_args_is_help=True)
 evidence_app = typer.Typer(name="evidence", help="Search persistent evidence (cross-session).", no_args_is_help=True)
+plugins_app = typer.Typer(
+    name="plugins",
+    help="List / enable / disable CytoPert plugins (user, project, entry-points).",
+    no_args_is_help=True,
+)
 app.add_typer(memory_app, name="memory")
 app.add_typer(skills_app, name="skills")
 app.add_typer(chains_app, name="chains")
 app.add_typer(evidence_app, name="evidence")
+app.add_typer(plugins_app, name="plugins")
 
 console = Console()
 
@@ -94,6 +100,15 @@ def agent(
             "reflection module so it can advance chain status / update memory."
         ),
     ),
+    save_trajectory: bool = typer.Option(
+        False,
+        "--save-trajectory",
+        help=(
+            "Append a ShareGPT-format trajectory entry to "
+            "~/.cytopert/trajectories/trajectory_samples.jsonl after each turn. "
+            "Off by default to avoid surprising disk writes."
+        ),
+    ),
 ) -> None:
     """Interact with the agent (interactive or single message)."""
     from cytopert.agent.loop import AgentLoop
@@ -124,6 +139,7 @@ def agent(
         # of silently falling back to LiteLLM's library defaults.
         max_tokens=config.agents.defaults.max_tokens,
         temperature=config.agents.defaults.temperature,
+        save_trajectory=save_trajectory,
     )
     if message:
         async def run_once() -> None:
@@ -193,25 +209,67 @@ def run_workflow(
     feedback: str | None = typer.Option(None, "--feedback", "-f", help="Experiment feedback for next round"),
     question: str | None = typer.Option(None, "--question", "-q", help="Research question (otherwise prompt)"),
 ) -> None:
-    """Run a workflow scenario (plan -> confirm -> compute -> evidence -> mechanism chains)."""
+    """Run a workflow scenario via the SCENARIO_REGISTRY."""
+    from cytopert.agent.loop import AgentLoop
     from cytopert.config.loader import load_config
-    from cytopert.workflow.pipeline import get_scenario_config
+    from cytopert.providers.litellm_provider import LiteLLMProvider
+    from cytopert.workflow.pipeline import (
+        StageContext,
+        available_scenarios,
+        get_scenario,
+        get_scenario_config,
+    )
 
     config = load_config()
     if not config.get_api_key():
         console.print("[red]Error: No API key configured.[/red]")
         raise typer.Exit(1)
-    if scenario == "nfatc1_mammary":
-        from cytopert.workflow.scenarios.nfatc1_mammary import run as run_nfatc1
-        research_question = question or "Identify differential response mechanism for Nfatc1 in mammary development."
-        result = run_nfatc1(research_question, scenario_config=get_scenario_config(config, scenario), feedback=feedback)
-        console.print(f"\n{__logo__} [bold]Workflow result (nfatc1_mammary):[/bold]\n")
-        console.print(result["response"])
-        if feedback:
-            console.print(f"\n[dim]Feedback applied: {feedback}[/dim]")
-    else:
-        console.print(f"[yellow]Unknown scenario: {scenario}. Known: nfatc1_mammary.[/yellow]")
-        console.print("[dim]Add scenario config in workflow.scenarios or use nfatc1_mammary.[/dim]")
+
+    # Importing the scenarios package triggers autoimport of every
+    # bundled module so register_scenario calls run before lookup.
+    pipeline = get_scenario(scenario)
+    if pipeline is None:
+        known = ", ".join(available_scenarios()) or "(none)"
+        console.print(
+            f"[yellow]Unknown scenario: {scenario}. Registered: {known}.[/yellow]"
+        )
+        console.print(
+            "[dim]Add a module under cytopert/workflow/scenarios/ "
+            "and call register_scenario(name, factory).[/dim]"
+        )
+        raise typer.Exit(2)
+
+    research_question = question or (
+        f"Identify differential response mechanism for scenario {scenario}."
+    )
+    provider = LiteLLMProvider(
+        api_key=config.get_api_key(),
+        api_base=config.get_api_base(),
+        default_model=config.agents.defaults.model,
+        provider_type=config.get_provider_type(),
+    )
+    agent = AgentLoop(
+        provider=provider,
+        workspace=config.workspace_path,
+        model=config.agents.defaults.model,
+        max_iterations=config.agents.defaults.max_tool_iterations,
+        max_tokens=config.agents.defaults.max_tokens,
+        temperature=config.agents.defaults.temperature,
+    )
+    ctx = StageContext(
+        config=config,
+        research_question=research_question,
+        data_config=get_scenario_config(config, scenario) or {},
+        feedback=feedback,
+        session_key=f"workflow:{scenario}",
+    )
+    result = asyncio.run(pipeline.run(agent, ctx))
+    console.print(
+        f"\n{__logo__} [bold]Workflow result ({pipeline.name}):[/bold]\n"
+    )
+    console.print(result["response"])
+    if feedback:
+        console.print(f"\n[dim]Feedback applied: {feedback}[/dim]")
 
 
 @app.command()
@@ -561,6 +619,78 @@ def evidence_recent(limit: int = typer.Option(20, "--limit", "-n")) -> None:
     for e in entries:
         console.print(f"[bold]{e.id}[/bold] tool={e.tool_name} genes={e.genes[:5]}")
         console.print(f"  {e.summary[:120]}")
+
+
+# ---------------------------------------------------------------------------
+# plugins subcommands (stage 7.3)
+# ---------------------------------------------------------------------------
+
+def _plugin_manager():
+    from pathlib import Path
+
+    from cytopert.plugins.manager import PluginManager
+
+    return PluginManager(project_dir=Path.cwd())
+
+
+@plugins_app.command("list")
+def plugins_list() -> None:
+    """List discovered CytoPert plugins (user / project / entry-points)."""
+    mgr = _plugin_manager()
+    infos = mgr.discover()
+    if not infos:
+        console.print("[dim]No plugins discovered.[/dim]")
+        return
+    table = Table(show_lines=False)
+    table.add_column("Name")
+    table.add_column("Source")
+    table.add_column("Enabled")
+    table.add_column("Location")
+    for info in infos:
+        enabled = "[green]\u2713[/green]" if info.enabled else "[red]disabled[/red]"
+        table.add_row(info.name, info.source.value, enabled, info.location)
+    console.print(table)
+
+
+def _disabled_path() -> "Path":
+    from pathlib import Path
+
+    from cytopert.plugins.manager import DEFAULT_DISABLED_FILE
+    from cytopert.utils.helpers import get_data_path
+
+    return Path(get_data_path()) / "plugins" / DEFAULT_DISABLED_FILE
+
+
+def _toggle_disabled(name: str, *, disable: bool) -> None:
+    path = _disabled_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[str] = set()
+    if path.exists():
+        existing = {
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+    if disable:
+        existing.add(name)
+        action = "disabled"
+    else:
+        existing.discard(name)
+        action = "enabled"
+    path.write_text("\n".join(sorted(existing)) + ("\n" if existing else ""), encoding="utf-8")
+    console.print(f"[green]\u2713[/green] {action} plugin {name!r}.")
+
+
+@plugins_app.command("disable")
+def plugins_disable(name: str = typer.Argument(...)) -> None:
+    """Disable a plugin by name (writes ~/.cytopert/plugins/disabled.txt)."""
+    _toggle_disabled(name, disable=True)
+
+
+@plugins_app.command("enable")
+def plugins_enable(name: str = typer.Argument(...)) -> None:
+    """Re-enable a previously disabled plugin."""
+    _toggle_disabled(name, disable=False)
 
 
 if __name__ == "__main__":

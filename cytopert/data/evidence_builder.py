@@ -27,7 +27,14 @@ _TOOLS_THAT_PRODUCE_EVIDENCE = {
     "scanpy_preprocess",
     "scanpy_cluster",
     "scanpy_de",
+    "pathway_lookup",
 }
+
+#: Tool names whose results are stored as KNOWLEDGE-typed evidence
+#: instead of DATA-typed evidence. Currently only the pathway lookup
+#: emits KNOWLEDGE; other tools all return numerical reproducible
+#: outputs and stay in the DATA bucket.
+_TOOLS_PRODUCING_KNOWLEDGE = {"pathway_lookup"}
 
 # Mixed-case alphanumeric tokens of length 2..10 starting with a letter,
 # e.g. NFATC1 (human), Nfatc1 (mouse), WNT5a (mixed). The legacy
@@ -144,9 +151,14 @@ def record_tool_evidence(
     if session_id:
         extra["session_id"] = session_id
 
+    evidence_type = (
+        EvidenceType.KNOWLEDGE
+        if tool_name in _TOOLS_PRODUCING_KNOWLEDGE
+        else EvidenceType.DATA
+    )
     return EvidenceEntry(
         id=eid,
-        type=EvidenceType.DATA,
+        type=evidence_type,
         source=source,
         genes=genes,
         pathways=pathways,
