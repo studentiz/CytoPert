@@ -23,8 +23,11 @@ dependencies = [
     "scanpy>=1.9.0",
     "cellxgene-census>=1.0.0",
     "tiledbsoma>=1.0.0",
-    "pertpy>=0.8.0",
-    "decoupler>=1.6.0",
+    # decoupler>=2.0 because cytopert/knowledge/pathways.py requires
+    # the dc.op namespace introduced in the 2.x series (PROGENy /
+    # DoRothEA / CollecTRI loaders). Anything < 2.0 will raise at the
+    # first pathway_lookup call.
+    "decoupler>=2.0.0",
     "httpx>=0.25.0",
     "loguru>=0.7.0",
     "rich>=13.0.0",

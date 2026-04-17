@@ -3,9 +3,10 @@
 The whitelist below is deliberately tight: only tools that produce
 *scientifically reproducible* numerical evidence are persisted. Memory /
 skills / chain / evidence_search outputs are not evidence sources -- they
-are control-plane operations -- so they must not appear here. Stage 7.2
-will add ``pathway_lookup`` (knowledge-class evidence) once the decoupler
-backed implementation lands.
+are control-plane operations -- so they must not appear here. The
+``pathway_lookup`` tool (decoupler PROGENy / DoRothEA / CollecTRI) is
+on the list and is the single tool that emits ``EvidenceType.KNOWLEDGE``
+records.
 
 The gene extractor is a heuristic. It accepts mixed-case symbols (e.g. mouse
 genes like ``Nfatc1``) but is intentionally pessimistic about short tokens

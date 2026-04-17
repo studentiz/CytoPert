@@ -55,6 +55,18 @@ class CytoPertCompressor(ContextEngine):
 
     name = "compressor"
 
+    def on_session_reset(self) -> None:
+        """Clear per-session counters and the evidence-protect set.
+
+        ContextEngine's default reset only clears token counters. The
+        evidence-protect list is per-session by intent (a refuted chain
+        in session A should not pin a tool message in session B), so we
+        also reset it here. The CLI's ``/reset`` slash command calls
+        this whenever the user clears history.
+        """
+        super().on_session_reset()
+        self.evidence_id_protect = []
+
     def __init__(
         self,
         provider: Any | None = None,

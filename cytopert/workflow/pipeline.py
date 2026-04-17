@@ -169,11 +169,14 @@ def get_scenario(name: str) -> Pipeline | None:
 def available_scenarios() -> list[str]:
     """Return registered scenario names sorted alphabetically."""
     # Touch the scenarios package once so its autoimport runs lazily
-    # before anyone enumerates the registry.
+    # before anyone enumerates the registry. A failure here usually
+    # means a bundled scenario raised at import time, which would
+    # otherwise present to the CLI as "the registry is mysteriously
+    # empty"; log it loud enough to notice.
     try:
         import cytopert.workflow.scenarios  # noqa: F401
     except Exception as exc:
-        logger.debug("scenarios autoimport failed: %s", exc)
+        logger.warning("scenarios package autoimport failed: %s", exc)
     return sorted(SCENARIO_REGISTRY)
 
 

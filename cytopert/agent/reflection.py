@@ -17,6 +17,7 @@ memory with low-quality auto-generated drafts.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -247,8 +248,19 @@ async def maybe_reflect(
         temperature=0.0,
     )
     if response.finish_reason == "error":
+        # Surface the failure so a long-running deployment does not look
+        # like reflection just never fired. Truncate the body so a
+        # multi-kilobyte error message does not flood the logs.
+        body = (response.content or "")[:200]
+        logging.getLogger(__name__).warning(
+            "reflection LLM call returned finish_reason=error: %s", body
+        )
         return None
     payload = parse_reflection_json(response.content)
     if not payload:
+        body = (response.content or "")[:200]
+        logging.getLogger(__name__).warning(
+            "reflection LLM response could not be parsed as JSON: %s", body
+        )
         return None
     return apply_reflection(loop, payload)

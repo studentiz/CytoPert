@@ -179,6 +179,11 @@ def agent(
                     if command in {"/reset", "/new"}:
                         agent_loop.sessions.reset(session_id)
                         agent_loop.enable_plan_gate(session_id)
+                        if agent_loop.context_engine is not None:
+                            try:
+                                agent_loop.context_engine.on_session_reset()
+                            except Exception as exc:  # noqa: BLE001
+                                console.print(f"[yellow]ContextEngine reset failed: {exc}[/yellow]")
                         console.print("[green]\u2713[/green] Session cleared; plan gate re-armed.")
                         continue
                     if command == "/skip-plan":

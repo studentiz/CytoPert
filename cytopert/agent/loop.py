@@ -504,8 +504,15 @@ class AgentLoop:
                 f"with no terminal model response. The most recent tool result was:\n\n{tail}\n\n"
                 "Re-run with a larger maxToolIterations or a more specific request."
             )
+        # Per-turn signal: did THIS turn produce reproducible evidence?
+        # The legacy condition checked ``not self._evidence_store`` but
+        # stage 2.3 backfilled the in-process store from EvidenceDB on
+        # init, so an old session would silently disable the gate.
+        # ``new_evidence_ids`` is populated by ``_record_side_effects``
+        # only when a tool succeeded AND its output produced an
+        # EvidenceEntry, which is exactly the signal we want here.
         if (
-            not self._evidence_store
+            not new_evidence_ids
             and (not tools_used or self._all_tool_results_errors(tool_results))
             and self._is_research_conclusion(content)
         ):
@@ -707,8 +714,10 @@ class AgentLoop:
 
         # Prepare a retry message that lists the offending ids and the
         # ones the model could legitimately cite (capped to 30 to keep
-        # the prompt small).
-        usable_preview = list(known)[:30]
+        # the prompt small). Sort the preview so the same evidence
+        # store always produces the same hint -- the underlying ``set``
+        # otherwise yields nondeterministic order on repeat retries.
+        usable_preview = sorted(known)[:30]
         retry_user = (
             "Your previous reply cited evidence ids that do not exist in the "
             "evidence store: "

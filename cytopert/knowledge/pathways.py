@@ -130,19 +130,19 @@ def lookup_genes(
 ) -> dict[str, Any]:
     """Return a structured lookup result for *genes* in *source*.
 
-    The returned dict has the shape:
+    The returned dict has the shape (gene symbols are placeholders):
 
     .. code-block:: python
 
         {
             "source": "progeny",
             "organism": "human",
-            "genes_queried": ["NFATC1", "NOTCH1"],
+            "genes_queried": ["GENE_A", "GENE_B"],
             "matches": [
-                {"gene": "NFATC1", "regulator": "NFkB", "weight": 0.4, ...},
-                ...
+                {"gene": "GENE_A", "regulator": "Pathway_1", "weight": 0.4},
+                {"gene": "GENE_B", "regulator": "Pathway_2", "weight": -0.3},
             ],
-            "regulators": ["NFkB", "JAK-STAT", ...],
+            "regulators": ["Pathway_1", "Pathway_2"],
             "n_rows_total": 1234,
             "n_matches": 17,
         }
@@ -158,8 +158,8 @@ def lookup_genes(
     df = get_resource(source, organism)
     # decoupler resources are always returned as a pandas DataFrame with
     # columns including 'source' (regulator/pathway) and 'target' (gene).
-    # We lowercase both sides so case differences (NFATC1 vs Nfatc1) do
-    # not silently miss.
+    # We lowercase both sides so case differences (e.g. mouse vs human
+    # symbol capitalisation) do not silently miss.
     needles = {g.lower() for g in queried}
     target_lower = df["target"].astype(str).str.lower()
     mask = target_lower.isin(needles)

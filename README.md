@@ -192,19 +192,20 @@ The agent calls `chain_status chain_id=chain_0001 status=refuted ...`, appends t
 
 ## Tools
 
-| Group              | Tools                                                                                  |
-| ------------------ | -------------------------------------------------------------------------------------- |
-| Data               | `census_query`, `load_local_h5ad`                                                      |
-| Preprocessing & DE | `scanpy_preprocess`, `scanpy_cluster`, `scanpy_de`                                     |
-| Reasoning          | `chains`, `chain_status`                                                               |
-| Memory & skills    | `evidence`, `evidence_search`, `memory`, `skills_list`, `skill_view`, `skill_manage`   |
+| Group              | Tools                                                                                                |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| Data               | `census_query`, `load_local_h5ad`                                                                    |
+| Preprocessing & DE | `scanpy_preprocess`, `scanpy_cluster`, `scanpy_de`                                                   |
+| Pathway / TF lookup | `pathway_lookup` (PROGENy / DoRothEA / CollecTRI via decoupler; emits KNOWLEDGE evidence)           |
+| Reasoning          | `chains`, `chain_status`                                                                             |
+| Memory & skills    | `evidence`, `evidence_search`, `memory`, `skills_list`, `skill_view`, `skill_manage`                 |
 
 Full parameters in [docs/tools.md](docs/tools.md). Earlier alpha builds also
 exposed `pertpy_*`, `decoupler_enrichment`, and `pathway_*` tools. They were
 removed in stage 1 of the completeness overhaul because the underlying
 handlers were stubs that returned guidance text instead of running the
-analysis. A real `pathway_lookup` (backed by decoupler PROGENy / DoRothEA /
-CollecTRI resources) lands in stage 7.2.
+analysis; the real `pathway_lookup` (decoupler PROGENy / DoRothEA /
+CollecTRI) is the production replacement.
 
 ## Where things live
 

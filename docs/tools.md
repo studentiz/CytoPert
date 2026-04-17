@@ -67,14 +67,36 @@ log1p / highly_variable_genes / scale / pp.pca`). Writes
 `tl.rank_genes_groups`. Reads the AnnData at `path` and returns a
 ranked-genes summary string suitable for evidence extraction.
 
-| Parameter  | Type | Default     | Description                                              |
-| ---------- | ---- | ----------- | -------------------------------------------------------- |
-| `path`     | str  | -           | Path to the preprocessed `.h5ad`.                        |
-| `groupby`  | str  | -           | obs column to group by (e.g. `condition`, `cell_type`).  |
-| `group1`   | str  | -           | Group of interest.                                       |
-| `group2`   | str  | `'rest'`    | Reference group (defaults to one-vs-rest).               |
-| `top_n`    | int  | `20`        | How many top genes to include in the result string.      |
-| `method`   | str  | `wilcoxon`  | scanpy DE method.                                        |
+| Parameter | Type | Default | Description                                              |
+| --------- | ---- | ------- | -------------------------------------------------------- |
+| `path`    | str  | -       | Path to the preprocessed `.h5ad`. Required.              |
+| `groupby` | str  | -       | obs column to group by (e.g. `condition`, `cell_type`). Required. |
+| `group1`  | str  | -       | Group of interest. Required.                             |
+| `group2`  | str  | -       | Reference group (must be a real group label in `groupby`; the tool does not currently expose a one-vs-rest shortcut). Required. |
+| `top_n`   | int  | `20`    | How many top genes to include in the result string.      |
+
+The DE method is hard-coded to `wilcoxon` in the current implementation.
+Add an explicit `method` parameter to the tool's JSON schema if your
+workflow needs `t-test_overestim_var` / `logreg`; the underlying scanpy
+call is straightforward to extend.
+
+## Pathway / TF lookup
+
+### `pathway_lookup`
+
+Look up the PROGENy / DoRothEA / CollecTRI regulators of a gene set
+through `decoupler.op`. The first call per `(source, organism)` fetches
+the network DataFrame and caches it under
+`~/.cytopert/cache/knowledge/<source>__<organism>.parquet` so subsequent
+calls are offline. The result is recorded as KNOWLEDGE-typed evidence
+and is safe to cite via `[evidence: tool_pathway_lookup_<digest>]`.
+
+| Parameter  | Type        | Default      | Description                                                                                  |
+| ---------- | ----------- | ------------ | -------------------------------------------------------------------------------------------- |
+| `genes`    | array<str>  | -            | Gene symbols to look up. Mixed case is fine. Required.                                       |
+| `source`   | enum        | `progeny`    | One of `progeny` / `dorothea` / `collectri`.                                                 |
+| `organism` | str         | `human`      | Organism the network is curated for; `human` and `mouse` are supported by all three sources. |
+| `top_n`    | int         | `25`         | Cap on regulators / matches surfaced in the response.                                        |
 
 ## Reasoning
 
@@ -125,7 +147,7 @@ Cross-session search backed by SQLite + FTS5.
 | `query`     | str    | Free-text FTS5 query against `summary / genes / pathways / source / tool_name`.                                        |
 | `gene`      | str    | Substring filter on the `genes_json` column.                                                                           |
 | `pathway`   | str    | Substring filter on the `pathways_json` column.                                                                        |
-| `tissue`    | str    | Substring filter on `state_conditions / source / summary` (e.g. `mammary`).                                            |
+| `tissue`    | str    | Substring filter on `state_conditions / source / summary` (e.g. any tissue / disease term that appears in those fields). |
 | `tool_name` | str    | Exact match on the producing tool, e.g. `scanpy_de`.                                                                   |
 | `top_k`     | int    | Default `20`. Maximum entries to return.                                                                               |
 
