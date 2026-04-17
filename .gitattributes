@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Mark vendored hermes-agent blueprints so they are not counted in
+# GitHub language statistics. These files are read-only references
+# excluded from the built wheel; see references/hermes/README.md.
+references/hermes/** linguist-vendored=true
+references/hermes/** linguist-generated=true

@@ -47,6 +47,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cytopert"]
+exclude = [
+  "references",
+  "references/**",
+  "tests",
+  "tests/**",
+  "docs",
+  "docs/**",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "references",
+  "references/**",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "cytopert/skills/bundled" = "cytopert/skills/bundled"
