@@ -28,8 +28,13 @@ if TYPE_CHECKING:  # avoid circular import at module load time
 SLASH_COMMAND_HELP: list[tuple[str, str]] = [
     ("/help", "Show this help."),
     ("/exit, /quit", "Leave the interactive shell."),
-    ("/reset, /new", "Clear conversation + re-arm plan gate + reset compressor."),
-    ("/skip-plan", "Disable the plan gate for this session."),
+    ("/reset, /new", "Clear conversation history (and reset the compressor)."),
+    (
+        "/plan-gate [on|off]",
+        "Toggle plan-then-execute mode. OFF by default; turn ON when "
+        "you want a textual plan before any tool calls (then reply 'go').",
+    ),
+    ("/skip-plan", "Alias for `/plan-gate off`."),
     ("/model [name]", "Show or switch model in-process for this session."),
     ("/usage", "Show this session's accumulated token / cost stats."),
     ("/history [N]", "Print the last N user / assistant messages (default 6)."),
@@ -169,15 +174,46 @@ def _toggle_skip_plan(loop: "AgentLoop", session_id: str, console: Console) -> N
     console.print("[green]\u2713[/green] Plan gate disabled for this session.")
 
 
+def _set_plan_gate(
+    loop: "AgentLoop", session_id: str, on: bool, console: Console
+) -> None:
+    """Explicitly arm or disarm the plan gate.
+
+    Plan-gate is OFF by default in the interactive shell because users
+    expect normal two-way conversation first. Power users opt back in
+    with `/plan-gate on` when they want every workflow to start with a
+    textual execution plan.
+    """
+    from cytopert.agent.loop import (
+        PLAN_MODE_AWAITING,
+        PLAN_MODE_DISABLED,
+        PLAN_MODE_KEY,
+    )
+
+    sess = loop.sessions.get_or_create(session_id)
+    sess.metadata[PLAN_MODE_KEY] = PLAN_MODE_AWAITING if on else PLAN_MODE_DISABLED
+    loop.sessions.save(sess)
+    if on:
+        console.print(
+            "[green]\u2713[/green] Plan gate armed. The next turn will "
+            "produce a textual plan only; reply [bold]go[/bold] (or "
+            "[bold]execute[/bold] / [bold]approve[/bold]) to authorise tools."
+        )
+    else:
+        console.print("[green]\u2713[/green] Plan gate disabled for this session.")
+
+
 def _reset(loop: "AgentLoop", session_id: str, console: Console) -> None:
     loop.sessions.reset(session_id)
-    loop.enable_plan_gate(session_id)
     if loop.context_engine is not None:
         try:
             loop.context_engine.on_session_reset()
         except Exception as exc:  # noqa: BLE001
             console.print(f"[yellow]ContextEngine reset failed: {exc}[/yellow]")
-    console.print("[green]\u2713[/green] Session cleared; plan gate re-armed.")
+    console.print(
+        "[green]\u2713[/green] Session cleared. Plan gate stays in its "
+        "current mode (use [bold]/plan-gate on[/bold] to re-arm)."
+    )
 
 
 def handle_slash_command(
@@ -201,6 +237,29 @@ def handle_slash_command(
         return "handled"
     if head == "/skip-plan":
         _toggle_skip_plan(loop, session_id, console)
+        return "handled"
+    if head == "/plan-gate":
+        if not args:
+            from cytopert.agent.loop import PLAN_MODE_KEY
+
+            sess = loop.sessions.get_or_create(session_id)
+            current = sess.metadata.get(PLAN_MODE_KEY, "disabled")
+            console.print(
+                f"Plan gate is currently [bold]{current}[/bold]. "
+                "Use [bold]/plan-gate on[/bold] or [bold]/plan-gate off[/bold] "
+                "to change."
+            )
+            return "handled"
+        choice = args[0].lower()
+        if choice in {"on", "true", "1", "yes", "enable"}:
+            _set_plan_gate(loop, session_id, on=True, console=console)
+        elif choice in {"off", "false", "0", "no", "disable"}:
+            _set_plan_gate(loop, session_id, on=False, console=console)
+        else:
+            console.print(
+                f"[red]Unknown /plan-gate argument {choice!r}; "
+                "expected 'on' or 'off'.[/red]"
+            )
         return "handled"
     if head == "/help":
         _print_help(console)

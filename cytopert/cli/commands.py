@@ -218,14 +218,10 @@ def agent(
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
         console.print(
             "[dim]Type /help for the full slash-command list. Plan-gate is "
-            "ON by default; reply 'go' (or 'execute' / 'approve') to "
-            "authorise tool calls in the next turn.[/dim]\n"
+            "OFF by default (chat freely; tools run as needed). "
+            "Use /plan-gate on to require a textual plan + 'go' "
+            "before tools fire.[/dim]\n"
         )
-        # Interactive sessions start in plan-then-execute mode: the first
-        # turn produces a textual plan only and tool calls are gated until
-        # the researcher types 'go'. Use /skip-plan to disable it for
-        # casual chitchat sessions.
-        agent_loop.enable_plan_gate(session_id)
 
         async def run_interactive() -> None:
             nonlocal feedback

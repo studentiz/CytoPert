@@ -5,10 +5,6 @@ An evidence-bound LLM agent for differential cell-state responses to perturbatio
 </p>
 
 <p align="center">
-<b>English</b> · <a href="README.zh-CN.md">中文</a>
-</p>
-
-<p align="center">
 <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
 <img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="Apache-2.0">
 <img src="https://img.shields.io/badge/status-alpha-orange" alt="alpha">

@@ -131,14 +131,20 @@ async def run_prompt_toolkit_shell(
         bottom_toolbar=lambda: _render_toolbar(agent_loop, session_id),
     )
 
-    # Plan gate is on by default for interactive sessions.
-    agent_loop.enable_plan_gate(session_id)
+    # Plan gate is OFF by default. The previous "ON by default" policy
+    # forced every casual message ("hello", "what can you do?") into a
+    # plan-only turn with no tools, which produced repetitive
+    # "I need data first" replies that ignored the user's actual
+    # message. Power users can opt back in at any time with
+    # `/plan-gate on`.
 
     console.print(f"{__logo__} CytoPert interactive shell")
     console.print(
         "[dim]Type [bold]/help[/bold] for slash commands. "
-        "Plan-gate is ON by default; reply [bold]go[/bold] to authorise tool calls. "
-        "Press [bold]Ctrl+C[/bold] once to cancel the current turn, twice to exit.[/dim]\n"
+        "Plan-gate is OFF by default (chat freely; tools run as needed). "
+        "Use [bold]/plan-gate on[/bold] to require a textual plan + 'go' "
+        "before tools fire. Press [bold]Ctrl+C[/bold] once to cancel the "
+        "current turn, twice to exit.[/dim]\n"
     )
 
     while True:

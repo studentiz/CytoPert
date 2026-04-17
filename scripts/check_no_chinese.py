@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Fail when CJK characters appear in CytoPert source code.
 
-CytoPert is an English-source project. A handful of files are explicitly
-allowed to contain CJK characters:
+CytoPert is an English-only project. The previous policy whitelisted
+``tests/manual/run_deepseek_live.py`` and ``README.zh-CN.md`` so live
+tests could send Chinese prompts and a Chinese README could ship next
+to the English one. Both have been removed; the only remaining
+whitelist entries are:
 
-* ``tests/manual/run_deepseek_live.py`` -- the live test harness sends
-  Chinese prompts to DeepSeek to verify model robustness across
-  languages.
-* ``cytopert/skills/bundled/**`` -- bundled SKILL.md sheets are markdown
-  prose that may include CJK examples.
-* ``docs/**`` -- documentation (the Chinese README in particular).
-* ``references/**`` -- vendored upstream sources (we do not modify them).
-* ``README.zh-CN.md`` -- the Chinese README.
+* ``references/**`` -- vendored upstream sources (Hermes-agent etc.)
+  that we keep verbatim for diff transparency. Any CJK in them is
+  produced by upstream and is not ours to translate.
+* ``cytopert/skills/bundled/**`` -- bundled SKILL.md sheets MAY use
+  CJK in worked examples (the user can pin the language). The CytoPert
+  ones currently do not, but the policy stays permissive in case a
+  future skill ships in another language.
 
 Run as ``python scripts/check_no_chinese.py [path ...]`` (default scans
 ``cytopert/`` and ``tests/`` excluding the whitelist). Exit code 0 on a
@@ -27,14 +29,11 @@ from pathlib import Path
 
 CJK_RANGE = re.compile(r"[\u4e00-\u9fff]")
 
-#: Glob suffixes whose hits are silently allowed.
-WHITELIST_SUFFIXES = (
-    "tests/manual/run_deepseek_live.py",
-    "README.zh-CN.md",
-)
+#: Per-file allow-list (no CJK here today; kept intentionally empty so
+#: future additions are reviewed explicitly).
+WHITELIST_SUFFIXES: tuple[str, ...] = ()
 WHITELIST_PREFIXES = (
     "cytopert/skills/bundled/",
-    "docs/",
     "references/",
 )
 
@@ -68,8 +67,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "paths",
         nargs="*",
-        default=["cytopert", "tests"],
-        help="Paths to scan (defaults to cytopert/ and tests/).",
+        default=["cytopert", "tests", "docs", "README.md", "scripts"],
+        help=(
+            "Paths to scan (defaults to cytopert/, tests/, docs/, "
+            "README.md, scripts/)."
+        ),
     )
     args = parser.parse_args(argv)
     root = Path.cwd().resolve()

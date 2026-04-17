@@ -62,10 +62,15 @@ the other reflection thresholds (`>=5 tool calls`, chain touched,
 
 ## Roadmap
 
-- **Stage 7.1**: introduce `Stage` / `Pipeline` dataclasses and a
-  `SCENARIO_REGISTRY` populated from `cytopert/workflow/scenarios/*.py`
-  plus `importlib.metadata.entry_points(group="cytopert.scenarios")`.
-- **Stage 4**: a `PlanGate` state machine will enforce
-  "plan-then-confirm-then-execute" inside interactive sessions, so the
-  workflow's `confirm_before_run` hint becomes a real protocol instead of
-  a one-line prompt nudge.
+- The `Stage` / `Pipeline` dataclasses and the `SCENARIO_REGISTRY`
+  populated from `cytopert/workflow/scenarios/*.py` plus
+  `importlib.metadata.entry_points(group="cytopert.scenarios")` shipped
+  in stage 7.1; new scenarios just need to call `register_scenario(...)`
+  in their module top-level.
+- The `PlanGate` state machine ships in the AgentLoop today but is
+  **opt-in** (`/plan-gate on` in the interactive shell) -- the previous
+  default-on policy was rolled back because it forced every casual
+  message into a plan-only turn that ignored the user's actual request.
+  Workflow scenarios that want plan-then-confirm semantics should call
+  `agent_loop.enable_plan_gate(session_key)` before invoking
+  `Pipeline.run`.

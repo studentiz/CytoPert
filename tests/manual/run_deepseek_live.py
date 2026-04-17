@@ -257,7 +257,8 @@ async def t1_basic_chat() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            "请调用 skills_list 工具，把当前已安装的 skill 名称列出来。",
+            "Please call the skills_list tool and list the names of the "
+            "currently installed skills.",
             session_key="t1",
         )
     finally:
@@ -283,14 +284,18 @@ async def t2_memory_tool() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            "请通过 memory 工具把研究者偏好『我希望用简洁的中文输出，最多 3 条要点』"
-            "添加到 researcher 目标。完成后简短确认。",
+            "Please use the memory tool to add the researcher preference "
+            "'I prefer concise English output, at most 3 bullet points' "
+            "to the researcher target. Briefly confirm when done.",
             session_key="t2",
         )
     finally:
         tracker.restore()
     researcher = loop.memory.read("researcher")
-    _expect("简洁的中文" in researcher, f"researcher memory missing entry: {researcher!r}")
+    _expect(
+        "concise English" in researcher,
+        f"researcher memory missing entry: {researcher!r}",
+    )
     return {
         "response_preview": resp[:240],
         "researcher_chars": len(researcher),
@@ -319,11 +324,14 @@ async def t3_chains_tool() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            "基于已有证据 seed_e1 和 seed_e2，请通过 chains 工具提交一条机制链："
-            f"summary 为 '{GENE_A} -> {PATHWAY_X} -> {DOWNSTREAM_PHENOTYPE}'，"
-            f"links 为 [{{from_node: {GENE_A}, to_node: {PATHWAY_X}, relation: regulates, evidence_ids: [seed_e1]}},"
-            f" {{from_node: {PATHWAY_X}, to_node: {DOWNSTREAM_PHENOTYPE}, relation: drives, evidence_ids: [seed_e2]}}], "
-            "evidence_ids 为 [seed_e1, seed_e2]。提交后简短确认。",
+            "Using the existing evidence seed_e1 and seed_e2, please call "
+            "the chains tool to submit one mechanism chain: "
+            f"summary='{GENE_A} -> {PATHWAY_X} -> {DOWNSTREAM_PHENOTYPE}', "
+            f"links=[{{from_node: {GENE_A}, to_node: {PATHWAY_X}, "
+            f"relation: regulates, evidence_ids: [seed_e1]}}, "
+            f"{{from_node: {PATHWAY_X}, to_node: {DOWNSTREAM_PHENOTYPE}, "
+            f"relation: drives, evidence_ids: [seed_e2]}}], "
+            "evidence_ids=[seed_e1, seed_e2]. Briefly confirm after submission.",
             session_key="t3",
         )
     finally:
@@ -356,7 +364,8 @@ async def t4_evidence_search() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            f"请调用 evidence_search 工具，query 设为 '{GENE_A}'，把找到的证据 id 列出来。",
+            f"Please call the evidence_search tool with query='{GENE_A}' "
+            "and list every evidence id you find.",
             session_key="t4",
         )
     finally:
@@ -398,7 +407,6 @@ async def t5_census_query() -> dict[str, Any]:
         "error querying census" in low
         or "timeout" in low
         or "0 cells" in low
-        or "0 \u4e2a" in low
     ):
         soft = "census network/timeout/empty (not a parser bug)"
     if soft:
@@ -431,15 +439,17 @@ async def t6_reflection_triggered() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            "请按顺序完成以下操作（每一步都必须真正调用对应工具）："
-            "1) memory 工具 add 一条 context 条目 'reflection-test-context'；"
-            "2) memory 工具 add 一条 researcher 条目 'reflection-test-researcher'；"
-            "3) memory 工具 add 一条 hypothesis_log 条目 'reflection-test-log'；"
-            "4) evidence_search 工具 query='refl'；"
-            f"5) pathway_lookup 工具 genes=['{GENE_A}','{GENE_B}'] source='progeny'；"
-            "6) chains 工具 提交 summary='reflection chain' "
+            "Please complete the following steps in order; each step must "
+            "actually invoke the corresponding tool:\n"
+            "1) memory tool: add a context entry 'reflection-test-context'\n"
+            "2) memory tool: add a researcher entry 'reflection-test-researcher'\n"
+            "3) memory tool: add a hypothesis_log entry 'reflection-test-log'\n"
+            "4) evidence_search tool: query='refl'\n"
+            f"5) pathway_lookup tool: genes=['{GENE_A}','{GENE_B}'] source='progeny'\n"
+            "6) chains tool: submit summary='reflection chain' "
             "links=[{from_node:A,to_node:B,relation:r,evidence_ids:[refl_e0]}] "
-            "evidence_ids=[refl_e0,refl_e1]。完成后简短总结。",
+            "evidence_ids=[refl_e0,refl_e1]\n"
+            "Briefly summarise the results when done.",
             session_key="t6",
         )
     finally:
@@ -481,15 +491,20 @@ async def a1_real_pipeline() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            f"我已经把一份合成单细胞数据存到 {h5ad_path}（n_obs=300, n_vars=600，"
-            f"obs 列含 condition=ctrl/pert 各 150）。请按下面 4 步**真正调用对应工具**：\n"
-            f"1) load_local_h5ad path={h5ad_path} —— 确认数据可读；\n"
-            f"2) scanpy_preprocess path={h5ad_path} min_genes=10 min_cells=2 n_top_genes=200 n_pcs=20 —— 预处理；\n"
-            f"3) scanpy_de path=<上一步保存的 scanpy_preprocessed.h5ad> groupby=condition group1=pert "
-            f"group2=ctrl top_n=10 —— 跑差异表达；\n"
-            f"4) chains —— 用第 3 步真实输出里的 evidence_id 提一条 summary='condition pert vs ctrl DE' "
-            f"的链。**只引用真实出现过的 evidence id，不要编造。**\n"
-            f"完成后简短总结 4 个工具的结果。",
+            f"I've saved a synthetic single-cell dataset to {h5ad_path} "
+            "(n_obs=300, n_vars=600; obs has condition=ctrl/pert with "
+            "150 cells each). Please follow these 4 steps and ACTUALLY "
+            "invoke the corresponding tools:\n"
+            f"1) load_local_h5ad path={h5ad_path} -- verify the data is readable.\n"
+            f"2) scanpy_preprocess path={h5ad_path} min_genes=10 min_cells=2 "
+            "n_top_genes=200 n_pcs=20 -- preprocess.\n"
+            "3) scanpy_de path=<scanpy_preprocessed.h5ad from step 2> "
+            "groupby=condition group1=pert group2=ctrl top_n=10 -- run DE.\n"
+            "4) chains -- submit one chain with summary='condition pert vs "
+            "ctrl DE' using the evidence_id from step 3's actual output. "
+            "**Only cite evidence ids that actually appeared; do NOT "
+            "fabricate any.**\n"
+            "Briefly summarise the results of the 4 tool calls when done.",
             session_key="a1",
         )
     finally:
@@ -580,19 +595,21 @@ async def a2_plan_before_execute() -> dict[str, Any]:
     loop, provider, model = _make_loop_for_mode()
 
     tracker = _UsageTracker(provider)
-    plan_kw = ("计划", "plan", "步骤", "Plan", "PLAN", "1.", "1)", "1、")
+    plan_kw = ("plan", "Plan", "PLAN", "step", "Step", "STEP", "1.", "1)")
     try:
         # Turn 1: short, concrete prompt to discourage drift.
         resp1 = await loop.process_direct(
-            "请只用 5 行以内的中文列一个 3 步执行计划：第 1 步 skills_list；"
-            "第 2 步 evidence_search query='test'；第 3 步 memory(action='add',target='context',content='note')。"
-            "**只输出文本计划，这一回合不要调用任何工具。**",
+            "Please write a 3-step execution plan in at most 5 lines: "
+            "step 1 skills_list; step 2 evidence_search query='test'; "
+            "step 3 memory(action='add', target='context', content='note'). "
+            "**Only output the textual plan; do NOT call any tools this turn.**",
             session_key="a2_plan",
         )
         calls_after_turn1 = tracker.calls
         # Turn 2: explicit go.
         resp2 = await loop.process_direct(
-            "go。请按计划第 1 步：现在调用 skills_list 工具。",
+            "go. Please execute step 1 of the plan: invoke the skills_list "
+            "tool now.",
             session_key="a2_plan",
         )
         calls_after_turn2 = tracker.calls
@@ -613,10 +630,10 @@ async def a2_plan_before_execute() -> dict[str, Any]:
     if tool_calls_turn1_proxy > 0:
         soft = (
             f"model still invoked tool(s) in plan turn (proxy={tool_calls_turn1_proxy}) "
-            "— instruction-following limit"
+            "-- instruction-following limit"
         )
     if not has_plan_word:
-        soft = (soft + "; " if soft else "") + "no 'plan/计划/步骤' keyword in turn1"
+        soft = (soft + "; " if soft else "") + "no 'plan / step' keyword in turn1"
 
     _expect(tool_calls_turn2_proxy >= 1,
             f"turn2 should invoke at least 1 tool (proxy={tool_calls_turn2_proxy}); "
@@ -698,7 +715,8 @@ async def a3_cross_session() -> dict[str, Any]:
     tracker = _UsageTracker(provider_b)
     try:
         resp = await loop_b.process_direct(
-            f"请调用 evidence_search 工具，query='{GENE_B}'，把找到的 evidence id 列出来。",
+            f"Please call the evidence_search tool with query='{GENE_B}' "
+            "and list every evidence id you find.",
             session_key="cross_b",
         )
     finally:
@@ -742,9 +760,12 @@ async def a4_chain_lifecycle() -> dict[str, Any]:
     try:
         # Turn 1: propose
         resp1 = await loop.process_direct(
-            f"请通过 chains 工具提交一条机制链：summary='{GENE_A} -> {PATHWAY_X} -> {DOWNSTREAM_PHENOTYPE}'，"
-            f"evidence_ids=['lc_e1']，links=[{{from_node:{GENE_A},to_node:{PATHWAY_X},relation:regulates,"
-            f"evidence_ids:['lc_e1']}}]。提交后告诉我 chain_id。",
+            "Please call the chains tool to submit a mechanism chain: "
+            f"summary='{GENE_A} -> {PATHWAY_X} -> {DOWNSTREAM_PHENOTYPE}', "
+            f"evidence_ids=['lc_e1'], "
+            f"links=[{{from_node:{GENE_A}, to_node:{PATHWAY_X}, "
+            "relation:regulates, evidence_ids:['lc_e1']}}]. "
+            "After submission, tell me the chain_id.",
             session_key="a4",
         )
         chain_rows = loop.chains.list()
@@ -753,9 +774,13 @@ async def a4_chain_lifecycle() -> dict[str, Any]:
 
         # Turn 2: refute (wet-lab feedback in domain-neutral terms).
         resp2 = await loop.process_direct(
-            f"后续实验 (n=6, p=0.42) 显示 {GENE_A} 扰动后 {GENE_B} 没有变化，因此 {cid} 被反驳。"
-            f"请**调用 chain_status 工具**，参数 chain_id='{cid}', status='refuted', "
-            f"evidence_ids=['lab_n6'], note='wet-lab n=6 p=0.42 no {GENE_B} change'。完成后简短确认。",
+            f"Follow-up experiment (n=6, p=0.42) showed no change in {GENE_B} "
+            f"after {GENE_A} perturbation, so {cid} is refuted. "
+            "Please **call the chain_status tool** with parameters "
+            f"chain_id='{cid}', status='refuted', "
+            f"evidence_ids=['lab_n6'], "
+            f"note='wet-lab n=6 p=0.42 no {GENE_B} change'. "
+            "Briefly confirm when done.",
             session_key="a4",
         )
     finally:
@@ -821,13 +846,17 @@ async def a5_reflection_side_effects() -> dict[str, Any]:
             loop=loop,
             session_key="a5",
             user_message=(
-                f"我们刚跑完一份 {GENE_A} 扰动 ({STATE_S} vs {STATE_T}) 的标准 DE 流程"
-                "（4 条证据 + 1 条机制链），希望把这套'扰动-vs-控制标准 DE'流程"
-                "记成可复用的研究者偏好/流程提示，方便后续直接调用。"
+                f"We just ran a standard DE pipeline for {GENE_A} perturbation "
+                f"({STATE_S} vs {STATE_T}) with 4 evidence entries and 1 "
+                "mechanism chain. Please record this 'perturbation-vs-control "
+                "standard DE' pipeline as a reusable researcher preference / "
+                "workflow hint so it can be invoked directly next time."
             ),
             final_response=(
-                "工作流总结：load_local_h5ad → scanpy_preprocess → scanpy_de(condition=ctrl vs pert) → chains。"
-                "建议把'扰动-vs-控制 DE，priority=P1'写进 researcher 偏好，以便未来同类任务直接复用。"
+                "Workflow summary: load_local_h5ad -> scanpy_preprocess -> "
+                "scanpy_de(condition=ctrl vs pert) -> chains. "
+                "Suggest persisting 'perturbation-vs-control DE, priority=P1' "
+                "to the researcher memory so future similar tasks can reuse it."
             ),
             tool_calls_count=6,
             chains_touched=[chain_id],
@@ -880,7 +909,14 @@ async def a6_cli_subprocess() -> dict[str, Any]:
 
     # 2) agent -m: drives a real LLM call into skills_list tool.
     r_agent = _run_cli(
-        ["agent", "-m", "请调用 skills_list 工具，列出当前已安装的技能名称。", "-s", "cli_a6"],
+        [
+            "agent",
+            "-m",
+            "Please call the skills_list tool and list the names of the "
+            "currently installed skills.",
+            "-s",
+            "cli_a6",
+        ],
         home,
         timeout=180,
     )
@@ -939,8 +975,8 @@ async def b2_evidence_search_filters() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            f"请调用 evidence_search 工具，gene='{GENE_A}', tool_name='scanpy_de'。"
-            "把返回里的所有 evidence id 列出来。",
+            f"Please call the evidence_search tool with gene='{GENE_A}', "
+            "tool_name='scanpy_de'. List every evidence id in the result.",
             session_key="b2",
         )
     finally:
@@ -957,16 +993,18 @@ async def b3_skill_create_and_accept() -> dict[str, Any]:
     skill_name = "b3-test-skill"
     skill_md = (
         "---\\nname: b3-test-skill\\ndescription: B3 test skill\\nversion: 0.1.0\\n"
-        "metadata:\\n  cytopert:\\n    category: pipelines\\n---\\n# Test Skill\\n## When to Use\\n手动测试。"
+        "metadata:\\n  cytopert:\\n    category: pipelines\\n---\\n"
+        "# Test Skill\\n## When to Use\\nManual smoke test."
     )
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            f"请按下面 2 步真实调用 skill_manage 工具：\n"
-            f"1) action='create', name='{skill_name}', staged=true, category='pipelines', "
-            f"content='{skill_md}'；\n"
-            f"2) action='accept_staged', name='{skill_name}', category='pipelines'。"
-            f"完成后简短确认。",
+            "Please ACTUALLY invoke the skill_manage tool in two steps:\n"
+            f"1) action='create', name='{skill_name}', staged=true, "
+            f"category='pipelines', content='{skill_md}'\n"
+            f"2) action='accept_staged', name='{skill_name}', "
+            "category='pipelines'\n"
+            "Briefly confirm when done.",
             session_key="b3",
         )
     finally:
@@ -996,7 +1034,8 @@ async def a8_plan_gate_hard() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp1 = await loop.process_direct(
-            "请立刻调用 skills_list 工具列出已安装技能。",
+            "Please call the skills_list tool right now to list the "
+            "installed skills.",
             session_key="a8_session",
         )
         resp2 = await loop.process_direct("go", session_key="a8_session")

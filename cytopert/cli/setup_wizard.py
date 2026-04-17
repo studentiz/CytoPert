@@ -206,11 +206,120 @@ async def _run_test_call(config: Config) -> tuple[bool, str]:
             temperature=0.0,
         )
     except Exception as exc:  # noqa: BLE001 -- wizard absorbs all failures
-        return (False, f"Test call raised: {exc}")
+        return (False, f"Test call raised: {type(exc).__name__}: {exc}")
     if response.finish_reason == "error":
         return (False, f"Provider returned error: {response.content}")
     text = (response.content or "").strip()
+    if not text:
+        return (
+            False,
+            "Provider returned an empty reply (model loaded? quota? "
+            "tool-call only?). Try `cytopert doctor --ping` for a more "
+            "detailed probe.",
+        )
     return (True, f"Provider replied with {text[:40]!r}")
+
+
+def _print_test_result(console: Console, ok: bool, message: str) -> None:
+    """Render a one-line PASS/FAIL banner so the user can act on it."""
+    if ok:
+        console.print(
+            Panel(
+                f"[green]\u2713 Connection verified[/green]\n{message}",
+                title="LLM round-trip test",
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                f"[red]\u2717 Connection NOT verified[/red]\n{message}\n\n"
+                "Common causes:\n"
+                "  - Wrong / expired API key (re-enter it below)\n"
+                "  - Wrong API base URL for this provider\n"
+                "  - Model name not enabled for your account\n"
+                "  - Network blocked (corporate VPN, country firewall)",
+                title="LLM round-trip test",
+                border_style="red",
+            )
+        )
+
+
+def _ask_retry_action(console: Console) -> str:
+    """Prompt the user to either retry / reconfigure / proceed after a failure."""
+    console.print(
+        "\nWhat next?\n"
+        "  [bold]1[/bold]. Re-enter the API key only\n"
+        "  [bold]2[/bold]. Re-pick provider / model / key from scratch\n"
+        "  [bold]3[/bold]. Save anyway and exit (you can edit "
+        "~/.cytopert/config.json later)"
+    )
+    return Prompt.ask(
+        "Choose 1 / 2 / 3", choices=["1", "2", "3"], default="1"
+    )
+
+
+def _maybe_clear_prior_state(console: Console) -> None:
+    """Offer to wipe stale memory / evidence / chains / sessions for the active profile.
+
+    A common failure mode of the alpha was that memory from prior
+    sessions (sometimes in another language, sometimes about a
+    specific disease) bled into every fresh agent turn -- the LLM
+    would echo the stale context instead of replying to the user's
+    actual message. Clearing on first setup is the cleanest fix; we
+    default to NO so users who explicitly re-run setup to update
+    keys do not lose their curated memory.
+    """
+    from cytopert.utils.helpers import (
+        get_chains_dir,
+        get_data_path,
+        get_memory_dir,
+        get_state_db_path,
+    )
+
+    home = get_data_path()
+    targets = []
+    for path in (
+        get_memory_dir(),
+        get_chains_dir(),
+        home / "sessions",
+        home / "trajectories",
+        get_state_db_path(),
+    ):
+        if path.exists():
+            targets.append(path)
+    if not targets:
+        return
+
+    rendered = "\n".join(f"  - {p}" for p in targets)
+    console.print(
+        Panel(
+            "Found prior agent state from a previous install.\n\n"
+            f"{rendered}\n\n"
+            "Stale memory or evidence can poison fresh sessions (the "
+            "model often echoes prior context instead of answering "
+            "the new question). Clear it now for a clean slate?",
+            title="Reset prior agent state?",
+        )
+    )
+    if not Confirm.ask("Clear the items listed above?", default=False):
+        return
+
+    import shutil
+
+    cleared = 0
+    for path in targets:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            cleared += 1
+        except OSError as exc:
+            console.print(f"[yellow]Could not remove {path}: {exc}[/yellow]")
+    console.print(
+        f"[green]\u2713[/green] Reset {cleared} item(s); the next "
+        "`cytopert agent` session will start with empty memory."
+    )
 
 
 def _install_bundled_skills(console: Console) -> int:
@@ -238,16 +347,78 @@ def _print_summary(
         f"Model        : {config.agents.defaults.model}",
         f"Workspace    : {config.workspace_path}",
         f"Test call    : {'OK' if test_ok else 'WARN'} - {test_msg}",
-        f"Skills        : {skills_installed} bundled skill(s) installed",
+        f"Skills       : {skills_installed} bundled skill(s) installed",
     ]
     console.print(Panel("\n".join(body_rows), title="CytoPert setup complete"))
     console.print(
         "\nNext steps:\n"
-        "  1. cytopert agent                # interactive shell (PlanGate enabled by default)\n"
+        "  1. cytopert agent                # interactive shell (chat-first; "
+        "use /plan-gate on for plan+go workflows)\n"
         "  2. cytopert agent -m \"hello\"     # one-shot prompt\n"
-        "  3. cytopert run-workflow generic_de --question \"...\"   # template scenario\n"
-        "  4. cytopert doctor               # health-check the install\n"
+        "  3. cytopert doctor               # health-check the install\n"
+        "  4. cytopert run-workflow --help  # discover registered scenarios\n"
     )
+
+
+def _ask_choices(console: Console, pre_picked_provider: str | None) -> WizardChoices:
+    """Run the interactive Q&A path and return the captured choices."""
+    provider = pre_picked_provider or _ask_provider(console)
+    api_key = _ask_api_key(console, provider)
+    model = _ask_model(console, provider)
+    workspace_default = str(Path("~/.cytopert/workspace").expanduser())
+    workspace = _ask_workspace(console, workspace_default)
+    api_base = PROVIDER_DEFAULT_BASE.get(provider)
+    return WizardChoices(
+        provider=provider,
+        api_key=api_key,
+        api_base=api_base,
+        model=model,
+        workspace=workspace,
+    )
+
+
+def _verify_with_retry(
+    console: Console,
+    choices: WizardChoices,
+    *,
+    max_attempts: int = 3,
+) -> tuple[Config, bool, str]:
+    """Save the config, run a test call, and offer to reconfigure on failure.
+
+    Returns the final ``(config, ok, message)`` tuple. The caller is
+    expected to print the summary regardless of ``ok``; the wizard
+    should NOT silently exit on failure.
+    """
+    attempt = 1
+    config = _build_config(choices)
+    save_config(config)
+    test_ok, test_msg = asyncio.run(_run_test_call(config))
+    _print_test_result(console, test_ok, test_msg)
+    while not test_ok and attempt < max_attempts:
+        action = _ask_retry_action(console)
+        if action == "3":
+            console.print(
+                "[yellow]Saving the unverified config; remember to fix it "
+                "before running an analysis.[/yellow]"
+            )
+            return (config, test_ok, test_msg)
+        if action == "1":
+            new_key = _ask_api_key(console, choices.provider)
+            choices = WizardChoices(
+                provider=choices.provider,
+                api_key=new_key,
+                api_base=choices.api_base,
+                model=choices.model,
+                workspace=choices.workspace,
+            )
+        else:  # action == "2": full reconfigure
+            choices = _ask_choices(console, pre_picked_provider=None)
+        config = _build_config(choices)
+        save_config(config)
+        attempt += 1
+        test_ok, test_msg = asyncio.run(_run_test_call(config))
+        _print_test_result(console, test_ok, test_msg)
+    return (config, test_ok, test_msg)
 
 
 def run_wizard(
@@ -258,9 +429,10 @@ def run_wizard(
     """Run the interactive setup wizard end-to-end and return the saved Config.
 
     ``pre_picked_provider`` is for tests; in normal use the wizard
-    prompts the user. The function never raises on test-call failure --
-    it logs a warning and still saves the config so the user can retry
-    the call with ``cytopert doctor --ping`` after editing the key.
+    prompts the user. The function never raises on test-call failure;
+    instead it offers a retry / reconfigure / save-anyway loop so the
+    user always knows whether the LLM is reachable before leaving
+    setup.
     """
     console = console or Console()
     console.print(_ascii_logo(), style="bold")
@@ -274,24 +446,14 @@ def run_wizard(
             console.print("[yellow]Setup aborted; existing config left intact.[/yellow]")
             return load_config()
 
-    provider = pre_picked_provider or _ask_provider(console)
-    api_key = _ask_api_key(console, provider)
-    model = _ask_model(console, provider)
-    workspace_default = str(Path("~/.cytopert/workspace").expanduser())
-    workspace = _ask_workspace(console, workspace_default)
-    api_base = PROVIDER_DEFAULT_BASE.get(provider)
+    choices = _ask_choices(console, pre_picked_provider)
+    config, test_ok, test_msg = _verify_with_retry(console, choices)
 
-    choices = WizardChoices(
-        provider=provider,
-        api_key=api_key,
-        api_base=api_base,
-        model=model,
-        workspace=workspace,
-    )
-    config = _build_config(choices)
-    save_config(config)
+    # Offer to wipe stale memory / evidence / chains BEFORE the first
+    # `cytopert agent` so a fresh install does not inherit the prior
+    # tenant's context. Skipped silently when nothing exists yet.
+    _maybe_clear_prior_state(console)
 
-    test_ok, test_msg = asyncio.run(_run_test_call(config))
     skills_installed = _install_bundled_skills(console)
     _print_summary(console, config_path, config, test_ok, test_msg, skills_installed)
     return config

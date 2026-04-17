@@ -103,17 +103,25 @@ cytopert agent
 
 Interactive commands (type `/help` to print the full list):
 
-- `/help`             -- show every slash command
-- `/reset` or `/new`  -- clear conversation, re-arm the plan gate
-- `/skip-plan`        -- disable plan-gate for this session
-- `/model [name]`     -- switch model in-process
-- `/usage`            -- print this session's tokens / cost
-- `/history [N]`      -- print the last N user / assistant messages
-- `/skills`           -- list installed skills
-- `/chains`           -- list recent mechanism chains
-- `/retry`            -- re-send the last user message
-- `/undo`             -- drop the last user + assistant turn
-- `/exit` or `/quit`  -- exit
+- `/help`               -- show every slash command
+- `/reset` or `/new`    -- clear conversation history (and reset the compressor)
+- `/plan-gate [on|off]` -- toggle plan-then-execute mode (OFF by default;
+  turn ON when you want a textual plan before any tool calls -- then
+  reply `go` / `execute` / `approve` to authorise execution)
+- `/skip-plan`          -- alias for `/plan-gate off`
+- `/model [name]`       -- switch model in-process
+- `/usage`              -- print this session's tokens / cost
+- `/history [N]`        -- print the last N user / assistant messages
+- `/skills`             -- list installed skills
+- `/chains`             -- list recent mechanism chains
+- `/retry`              -- re-send the last user message
+- `/undo`               -- drop the last user + assistant turn
+- `/exit` or `/quit`    -- exit
+
+The interactive shell starts in chat-first mode: tools fire when the
+agent decides one is needed for the user's request. Use `/plan-gate on`
+to require a written execution plan + a `go` confirmation before any
+tool runs.
 
 ## Inspect persistent state
 
