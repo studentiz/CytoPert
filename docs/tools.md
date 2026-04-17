@@ -1,54 +1,154 @@
 # Tools
 
-CytoPert tools are callable by the agent. Each tool returns a string summary and can be chained for analysis.
+Every tool below is registered by `AgentLoop._register_default_tools` in
+`cytopert/agent/loop.py`. Tools removed in stage 1 of the completeness
+overhaul (`pertpy_perturbation_distance`, `pertpy_differential_response`,
+`decoupler_enrichment`, `pathway_check`, `pathway_constraint`) are no
+longer reachable; the `pathway_lookup` tool that replaces the pathway
+surface lands in stage 7.2.
 
-## Census Tools
+## Census
 
 ### `census_query`
 
-Query cellxgene Census and return a summary of the slice.
+Query cellxgene Census and return a slice summary.
 
-Common parameters:
-- `obs_value_filter`: SOMA filter for cells (e.g. `tissue_ontology_term_id == 'UBERON:0000178'`)
-- `var_value_filter`: SOMA filter for genes
-- `census_version`: recommended for reproducibility (e.g. `2025-11-08`)
-- `organism`: default `Homo sapiens`
-- `obs_only`: `true` to fetch only metadata (faster)
-- `max_cells`: default `20000`
-- `timeout_seconds`: default `30`
+| Parameter            | Type     | Default          | Description                                                                                                       |
+| -------------------- | -------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `obs_value_filter`   | str      | -                | SOMA value filter for cells (e.g. `tissue_ontology_term_id == 'UBERON:0001911'`).                                 |
+| `var_value_filter`   | str      | -                | SOMA value filter for genes.                                                                                      |
+| `census_version`     | str      | latest           | Pin a published Census version for reproducibility (e.g. `2025-11-08`).                                           |
+| `organism`           | str      | `Homo sapiens`   | Census organism.                                                                                                  |
+| `obs_only`           | bool     | `false`          | Return only the obs metadata; faster for scouting cell counts.                                                    |
+| `max_cells`          | int      | `20000`          | Cap the AnnData slice when not in `obs_only` mode.                                                                |
+| `obs_coords`         | str      | -                | Optional explicit row coords forwarded to SOMA (`get_anndata`).                                                   |
+| `timeout_seconds`    | int      | `30`             | Hard timeout for the SOMA query.                                                                                  |
 
-Example (metadata only):
-
-```
-obs_value_filter="tissue_ontology_term_id == 'UBERON:0000178'" obs_only=true max_cells=20000 timeout_seconds=60
-```
+`AgentLoop._maybe_parse_forced_tool_call` recognises text mentions of
+`census_query` plus the keys above and forces the tool call directly
+(useful when the model is reluctant to make a structured call).
 
 ### `load_local_h5ad`
 
-Load local `.h5ad` and return `n_obs`, `n_vars`, and obs columns.
+Load a local `.h5ad`. Returns `n_obs`, `n_vars`, and the obs columns.
 
-## Scanpy Tools
+| Parameter | Type | Description                          |
+| --------- | ---- | ------------------------------------ |
+| `path`    | str  | Absolute path to a readable `.h5ad`. |
 
-- `scanpy_preprocess`
-- `scanpy_cluster`
-- `scanpy_de`
+## Scanpy
 
-## Pertpy Tools
+### `scanpy_preprocess`
 
-- `pertpy_perturbation_distance`
-- `pertpy_differential_response`
+Standard scanpy preprocessing (`pp.filter_cells / filter_genes / normalize_total /
+log1p / highly_variable_genes / scale / pp.pca`). Writes
+`scanpy_preprocessed.h5ad` into the workspace.
 
-## Decoupler Tools
+| Parameter      | Type | Default | Description                                          |
+| -------------- | ---- | ------- | ---------------------------------------------------- |
+| `path`         | str  | -       | Path to the input `.h5ad`.                            |
+| `min_genes`    | int  | `200`   | Minimum genes per cell.                              |
+| `min_cells`    | int  | `3`     | Minimum cells per gene.                              |
+| `n_top_genes`  | int  | `2000`  | HVG count.                                           |
+| `n_pcs`        | int  | `50`    | Number of principal components.                      |
 
-- `decoupler_enrichment`
+### `scanpy_cluster`
 
-## Evidence
+`pp.neighbors` then Leiden / Louvain clustering on the workspace AnnData.
 
-- `evidence` – summarise evidence store
+| Parameter    | Type | Default   | Description                              |
+| ------------ | ---- | --------- | ---------------------------------------- |
+| `path`       | str  | -         | Path to the preprocessed `.h5ad`.        |
+| `method`     | str  | `leiden`  | `leiden` or `louvain`.                   |
+| `resolution` | float| `1.0`     | Resolution parameter.                    |
 
-## Pathway & Mechanism
+### `scanpy_de`
 
-- `pathway_constraint`
-- `pathway_check`
-- `chains`
+`tl.rank_genes_groups`. Reads the AnnData at `path` and returns a
+ranked-genes summary string suitable for evidence extraction.
 
+| Parameter  | Type | Default     | Description                                              |
+| ---------- | ---- | ----------- | -------------------------------------------------------- |
+| `path`     | str  | -           | Path to the preprocessed `.h5ad`.                        |
+| `groupby`  | str  | -           | obs column to group by (e.g. `condition`, `cell_type`).  |
+| `group1`   | str  | -           | Group of interest.                                       |
+| `group2`   | str  | `'rest'`    | Reference group (defaults to one-vs-rest).               |
+| `top_n`    | int  | `20`        | How many top genes to include in the result string.      |
+| `method`   | str  | `wilcoxon`  | scanpy DE method.                                        |
+
+## Reasoning
+
+### `chains`
+
+Submit (or update) a `MechanismChain` candidate and persist it as
+`status="proposed"` in `ChainStore`.
+
+| Parameter              | Type            | Description                                                                                                                                  |
+| ---------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `summary`              | str             | Required. Short summary of the chain.                                                                                                        |
+| `evidence_ids`         | array<str>      | Required. Evidence ids that support the chain. Must be ids actually returned by tool calls (e.g. `tool_scanpy_de_<digest>`).                 |
+| `links`                | array<object>   | Optional. Each link has `from_node`, `to_node`, `relation`, `evidence_ids`.                                                                  |
+| `chain_id`             | str             | Optional id when updating a previously created chain.                                                                                        |
+| `verification_readout` | str             | Optional suggested experimental readout.                                                                                                     |
+| `priority`             | enum            | Optional `P1` / `P2` / `P3`. If omitted, defaults to `P1` when `len(evidence_ids) >= 2` else `P2`.                                           |
+
+### `chain_status`
+
+Transition a previously proposed chain. Auto-appends a one-line entry
+`<chain_id> -> <status>: <summary>` to `HYPOTHESIS_LOG.md` so the latest
+state is visible in the prompt at the start of the next session.
+
+| Parameter      | Type        | Description                                                                                          |
+| -------------- | ----------- | ---------------------------------------------------------------------------------------------------- |
+| `chain_id`     | str         | Required. Id returned by `chains`.                                                                   |
+| `status`       | enum        | Required. `proposed` / `supported` / `refuted` / `superseded`.                                       |
+| `evidence_ids` | array<str>  | Optional new evidence ids supporting the transition (merged with the chain's existing evidence).     |
+| `note`         | str         | Optional free-text note (e.g. wet-lab readout).                                                      |
+
+## Memory & skills
+
+### `evidence`
+
+Render a recap of the in-process evidence store -- mostly used by the
+agent itself before composing a chain.
+
+| Parameter | Type | Description                                              |
+| --------- | ---- | -------------------------------------------------------- |
+| (none)    | -    | The tool reads from `AgentLoop._evidence_store`.         |
+
+### `evidence_search`
+
+Cross-session search backed by SQLite + FTS5.
+
+| Parameter   | Type   | Description                                                                                                            |
+| ----------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `query`     | str    | Free-text FTS5 query against `summary / genes / pathways / source / tool_name`.                                        |
+| `gene`      | str    | Substring filter on the `genes_json` column.                                                                           |
+| `pathway`   | str    | Substring filter on the `pathways_json` column.                                                                        |
+| `tissue`    | str    | Substring filter on `state_conditions / source / summary` (e.g. `mammary`).                                            |
+| `tool_name` | str    | Exact match on the producing tool, e.g. `scanpy_de`.                                                                   |
+| `top_k`     | int    | Default `20`. Maximum entries to return.                                                                               |
+
+### `memory`
+
+Mutate one of the three memory targets (`context`, `researcher`,
+`hypothesis_log`).
+
+| Parameter   | Type | Description                                                                                                  |
+| ----------- | ---- | ------------------------------------------------------------------------------------------------------------ |
+| `action`    | enum | `add` / `replace` / `remove`.                                                                                |
+| `target`    | enum | `context` / `researcher` / `hypothesis_log`.                                                                 |
+| `content`   | str  | New entry text (`add` / `replace`).                                                                          |
+| `old_text`  | str  | Unique substring of the existing entry to replace or remove.                                                 |
+
+### `skills_list` / `skill_view` / `skill_manage`
+
+Inspect and mutate the procedural memory under `~/.cytopert/skills/`.
+
+- `skills_list` -- no parameters; returns Level-0 metadata of every live skill.
+- `skill_view(name)` -- read the full SKILL.md body.
+- `skill_manage(action, name, ...)` -- the writer surface used by the
+  reflection module to stage agent-proposed skills. `action` is one of
+  `create`, `patch`, `edit`, `delete`, `accept_staged`, `view_file`,
+  `write_file`. See `cytopert/skills/tool.py` for the per-action
+  parameter list.

@@ -133,7 +133,7 @@ Keys at [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys)
 }
 ```
 
-Whatever model you pick must support OpenAI-style `tool_calls`. We have verified this with the Qwen3 instruct family, DeepSeek V3 / V3.1, the Claude / GPT / Gemini families, and Kimi K2. ChatGLM and some Llama 2 fine-tunes do not qualify.
+Whatever model you pick must support OpenAI-style `tool_calls`. The DeepSeek path is exercised end-to-end by `tests/manual/run_deepseek_live.py`; the OpenRouter / DashScope / Anthropic / vLLM paths are LiteLLM-compatible but not part of the automated test matrix yet -- expect that the first run with a new model may need its own debug pass. Models that are known **not** to support OpenAI `tool_calls` (and therefore will not work) include early ChatGLM and some Llama 2 fine-tunes.
 
 The remaining `agents.defaults` fields are `maxTokens` (8192 is enough for most turns), `temperature` (0.3 keeps mechanistic reasoning stable), and `maxToolIterations` (20 covers a full workflow). Run `cytopert status` to confirm the provider, model, and API key are picked up.
 
@@ -159,27 +159,24 @@ You: I'd like to look at NFATC1 KO response across basal / luminal / stem
 
 CytoPert: Plan
   1. census_query (obs_only) to scout cell counts in mammary tissue
-  2. census_query for ≤20k cells AnnData (Census version 2025-11-08)
+  2. census_query for <=20k cells AnnData (Census version 2025-11-08)
   3. scanpy_preprocess: HVG=2000, n_pcs=50
   4. scanpy_de per cell_type, NFATC1+ vs NFATC1-
-  5. decoupler_enrichment for KEGG / DoRothEA
+  5. pathway_lookup against PROGENy / DoRothEA on the top DE genes
   6. chains for candidate mechanism summaries
 
 You: go
 ... [tools run; depending on slice size, a few minutes]
-
-CytoPert: Three candidate chains:
-  chain_0001  NFATC1 → NOTCH → luminal differentiation   (P1, evidence: e1, e3)
-  chain_0002  NFATC1 → WNT  → basal expansion             (P2, evidence: e2)
-  chain_0003  NFATC1 → CTLA4 → stem quiescence            (P2, evidence: e4)
 ```
 
-Six tool calls is enough to trip the reflection hook. Once the turn returns:
+Once the turn returns, `cytopert chains list` prints a table with one row per
+chain (id, status, priority, first three evidence ids, summary head). Use the
+companion CLI commands to inspect the side effects:
 
 ```bash
-cytopert chains list                    # the three new chains
+cytopert chains list                    # rich table; one row per chain
 cytopert skills list --include-staged   # any skill the agent proposed
-cytopert memory show -t hypothesis_log  # one line per active chain
+cytopert memory show -t hypothesis_log  # one line per chain transition
 ```
 
 When wet-lab data comes back, push the verdict to the same session and the agent will move the chain through its state machine:
@@ -197,12 +194,15 @@ The agent calls `chain_status chain_id=chain_0001 status=refuted ...`, appends t
 | ------------------ | -------------------------------------------------------------------------------------- |
 | Data               | `census_query`, `load_local_h5ad`                                                      |
 | Preprocessing & DE | `scanpy_preprocess`, `scanpy_cluster`, `scanpy_de`                                     |
-| Perturbation       | `pertpy_perturbation_distance`, `pertpy_differential_response`                         |
-| Pathway            | `decoupler_enrichment`, `pathway_constraint`, `pathway_check`                          |
 | Reasoning          | `chains`, `chain_status`                                                               |
 | Memory & skills    | `evidence`, `evidence_search`, `memory`, `skills_list`, `skill_view`, `skill_manage`   |
 
-Full parameters in [docs/tools.md](docs/tools.md).
+Full parameters in [docs/tools.md](docs/tools.md). Earlier alpha builds also
+exposed `pertpy_*`, `decoupler_enrichment`, and `pathway_*` tools. They were
+removed in stage 1 of the completeness overhaul because the underlying
+handlers were stubs that returned guidance text instead of running the
+analysis. A real `pathway_lookup` (backed by decoupler PROGENy / DoRothEA /
+CollecTRI resources) lands in stage 7.2.
 
 ## Where things live
 
@@ -230,7 +230,7 @@ Full parameters in [docs/tools.md](docs/tools.md).
 
 - **`cytopert status` says `API key: not set`.** Check that one of `providers.*.apiKey` is filled and that `config.json` is valid JSON. A stray single quote is the usual culprit.
 - **Census queries time out.** Tighten `obs_value_filter` (prefer `tissue_ontology_term_id` over the loose `tissue` string), use `obs_only=true` first to scout cell counts, then set `max_cells` and a pinned `census_version` when you fetch the AnnData.
-- **The model never calls a tool.** It does not support OpenAI `tool_calls`. The four configurations above are verified; some older fine-tunes of Llama 2 and the early ChatGLM line are not.
+- **The model never calls a tool.** It does not support OpenAI `tool_calls`. The DeepSeek path is exercised by the live test suite; for other providers, double-check that the model card advertises function calling. Early ChatGLM and some Llama 2 fine-tunes are confirmed not to qualify.
 - **The agent loops with "OK." replies.** The session history got contaminated. Type `/reset` in interactive mode or start a new session id.
 - **Starting from scratch.** `rm -rf ~/.cytopert/` and re-run `cytopert onboard`.
 
@@ -254,7 +254,19 @@ ruff check cytopert/ tests/
 
 ## Acknowledgements
 
-The self-improving design borrows from Nous Research's [Hermes Agent](https://github.com/NousResearch/hermes-agent). The single-cell stack is [scverse](https://scverse.org/) (scanpy, pertpy, decoupler) plus [CZ cellxgene Census](https://chanzuckerberg.github.io/cellxgene-census/). Model access goes through [LiteLLM](https://github.com/BerriAI/litellm). The skill format follows the [agentskills.io](https://agentskills.io) open standard.
+CytoPert's agent loop and learning-loop architecture are adapted from
+Nous Research's [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+(MIT). Specifically the `ToolRegistry`, `ContextEngine`, `ContextCompressor`,
+`prompt_caching`, plugin discovery, and `trajectory` modules carry per-file
+provenance headers and the upstream MIT license is preserved in
+`references/hermes/` for diffability. See
+[docs/hermes-borrowing.md](docs/hermes-borrowing.md) for the per-module
+diff rationale and the pinned upstream commit. The single-cell stack is
+[scverse](https://scverse.org/) (scanpy plus optional pertpy / decoupler
+for downstream pathway lookups) and [CZ cellxgene Census](https://chanzuckerberg.github.io/cellxgene-census/).
+Model access goes through [LiteLLM](https://github.com/BerriAI/litellm).
+The skill format follows the [agentskills.io](https://agentskills.io)
+open standard.
 
 Issues, PRs, and new SKILL.md sheets are welcome.
 

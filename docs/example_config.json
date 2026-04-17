@@ -13,7 +13,7 @@
       "apiKey": "sk-or-v1-YOUR_KEY",
       "apiBase": "https://openrouter.ai/api/v1"
     },
-    "openai": {
+    "deepseek": {
       "apiKey": "",
       "apiBase": null
     },
@@ -21,7 +21,7 @@
       "apiKey": "",
       "apiBase": null
     },
-    "deepseek": {
+    "openai": {
       "apiKey": "",
       "apiBase": null
     },

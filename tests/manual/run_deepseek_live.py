@@ -36,7 +36,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 LLM_API_FILE = ROOT / "LLM_API.txt"
-CONDA_PYTHON = "/Users/huhuan/miniconda3/envs/cytopert_env/bin/python"
+# Subprocess CLI tests run "<python> -m cytopert.cli.commands ...". Default
+# to the current interpreter (which is what most contributors will want);
+# allow CYTOPERT_TEST_PYTHON to override for setups that need a specific
+# environment (e.g. CI that builds the wheel into an isolated venv).
+CONDA_PYTHON = os.environ.get("CYTOPERT_TEST_PYTHON", sys.executable)
 
 
 def _read_deepseek_credentials() -> tuple[str, str, str]:
