@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from cytopert.agent.context_compressor import CytoPertCompressor
 from cytopert.providers.base import LLMResponse
 

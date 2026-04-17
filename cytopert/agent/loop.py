@@ -832,16 +832,56 @@ class AgentLoop:
             params["max_cells"] = int(max_cells)
         return ("census_query", params)
 
-    @staticmethod
-    def _extract_timeout_seconds(text: str) -> str | None:
-        m = re.search(r"timeout_seconds\s*(?:=|：|:)?\s*(\d+)", text, flags=re.IGNORECASE)
+    # Chinese-input compatibility (CytoPert specific feature).
+    #
+    # Researchers in mainland China often phrase tool requests with
+    # full-width / CJK punctuation. We accept those tokens by performing
+    # a one-pass ASCII normalisation BEFORE the regex below ever runs --
+    # which keeps the regex itself purely ASCII and lets the rest of the
+    # source remain English-only (see docs/hermes-borrowing.md and the
+    # plan's stage 9 sweep for the policy).
+    #
+    # The token list below maps full-width separators / the verb meaning
+    # "set to" onto their ASCII equivalents. Anything not listed here is
+    # left untouched so user-entered scientific text (gene symbols with
+    # CJK suffixes, etc.) is preserved verbatim.
+    _CN_INPUT_NORMALISE: tuple[tuple[str, str], ...] = (
+        ("\uff1a", ":"),    # full-width colon
+        ("\uff0c", ","),    # full-width comma
+        ("\u3002", "."),    # ideographic full stop
+        ("\uff08", "("),    # full-width left parenthesis
+        ("\uff09", ")"),    # full-width right parenthesis
+        ("\u8bbe\u4e3a", "="),  # "set to" verb (assignment)
+    )
+
+    @classmethod
+    def _normalise_cn_input(cls, text: str) -> str:
+        """ASCII-fold the documented CJK input tokens, leave everything else."""
+        if not text:
+            return text
+        for cn, ascii_token in cls._CN_INPUT_NORMALISE:
+            if cn in text:
+                text = text.replace(cn, ascii_token)
+        return text
+
+    @classmethod
+    def _extract_timeout_seconds(cls, text: str) -> str | None:
+        m = re.search(
+            r"timeout_seconds\s*(?:=|:)?\s*(\d+)",
+            cls._normalise_cn_input(text),
+            flags=re.IGNORECASE,
+        )
         if not m:
             return None
         return m.group(1)
 
-    @staticmethod
-    def _extract_bool(text: str, key: str) -> bool | None:
-        m = re.search(rf"{key}\s*(?:=|：|:)?\s*(true|false|1|0|yes|no)", text, flags=re.IGNORECASE)
+    @classmethod
+    def _extract_bool(cls, text: str, key: str) -> bool | None:
+        m = re.search(
+            rf"{key}\s*(?:=|:)?\s*(true|false|1|0|yes|no)",
+            cls._normalise_cn_input(text),
+            flags=re.IGNORECASE,
+        )
         if not m:
             return None
         val = m.group(1).lower()
@@ -861,21 +901,26 @@ class AgentLoop:
 
     @classmethod
     def _extract_filter(cls, text: str, key: str) -> str | None:
-        # Stop at the next known parameter key, an English/Chinese comma, newline,
-        # or a Chinese full-stop. This prevents `obs_value_filter=tissue == 'blood',
-        # obs_only=true, max_cells=200` from being captured as one giant filter.
+        # Stop at the next known parameter key, a comma, newline, or a
+        # period. This prevents
+        #   ``obs_value_filter=tissue == 'blood', obs_only=true, max_cells=200``
+        # from being captured as one giant filter. CJK punctuation is
+        # normalised to ASCII first by ``_normalise_cn_input`` so the
+        # regex itself stays English / ASCII-only.
+        text = cls._normalise_cn_input(text)
         other = "|".join(re.escape(k) for k in cls._FORCED_PARSE_KEYS if k != key)
-        stop = rf"(?:,|，|\n|。|\s+(?:{other})\b|$)"
-        pattern = rf"{key}\s*(?:=|：|:|设为)?\s*(.+?)\s*{stop}"
+        stop = rf"(?:,|\n|\.|\s+(?:{other})\b|$)"
+        pattern = rf"{key}\s*(?:=|:)?\s*(.+?)\s*{stop}"
         m = re.search(pattern, text, flags=re.IGNORECASE)
         if not m:
             return None
-        value = m.group(1).strip().rstrip(",，。")
+        value = m.group(1).strip().rstrip(",.")
         if (value.startswith('"') and value.endswith('"')) or (
             value.startswith("'") and value.endswith("'")
         ):
             value = value[1:-1]
-        value = re.sub(r"（[^）]*）$", "", value).strip()
+        # Trailing parenthetical aside (after CJK -> ASCII normalisation
+        # both forms are now plain parentheses).
         value = re.sub(r"\([^\)]*\)$", "", value).strip()
         return value or None
 

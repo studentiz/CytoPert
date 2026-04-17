@@ -108,7 +108,7 @@ def _agent_turn_runner(prompt_builder: Callable[[StageContext], str]):
     return _run
 
 
-def AgentTurnStage(
+def agent_turn_stage(
     *,
     name: str,
     description: str = "",
@@ -128,6 +128,12 @@ def AgentTurnStage(
         return result
 
     return Stage(name=name, description=description, run=_named)
+
+
+# Backwards-compatible alias (the original API used CamelCase because the
+# helper acts like a class constructor; we keep the old name reachable so
+# external scenarios written against the alpha do not break).
+AgentTurnStage = agent_turn_stage
 
 
 # ---------------------------------------------------------------------------

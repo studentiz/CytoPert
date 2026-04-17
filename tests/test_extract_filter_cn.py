@@ -1,10 +1,14 @@
 """Stage 2.7 tests for AgentLoop._extract_filter Chinese-input compatibility.
 
-The forced-tool-call parser intentionally accepts Chinese punctuation
-(``：`` / ``，`` / ``设为``) so researchers writing in Chinese can drive
-``census_query`` without quoting around English ASCII syntax. This file
-exercises that compatibility surface explicitly so future refactors do
-not break it.
+The forced-tool-call parser intentionally accepts the most common CJK
+punctuation tokens -- full-width colon (``\\uff1a``), full-width comma
+(``\\uff0c``), and the verb meaning "set to" (``\\u8bbe\\u4e3a``) -- so
+researchers writing in Chinese can drive ``census_query`` without
+quoting around English ASCII syntax. The runtime achieves this with a
+one-pass ASCII normalisation in
+``AgentLoop._normalise_cn_input``; this test file exercises both the
+ASCII output and the full-width input shapes so future refactors do not
+silently regress the policy.
 """
 
 from __future__ import annotations

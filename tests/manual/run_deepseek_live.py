@@ -1012,9 +1012,8 @@ async def a8_plan_gate_hard() -> dict[str, Any]:
     # round-trip happened, which would be a gate failure regardless of
     # what the model wrote.
     calls_after_turn1 = tracker.calls
-    calls_for_turn2 = tracker.calls  # snapshot resets below
-    # Recompute via difference -- tracker is cumulative.
-    # turn1 always charges >=1 chat call; turn2 should add >=1.
+    # turn1 always charges >=1 chat call; turn2 (after the 'go' phrase)
+    # should add >=1 because the gate flips and tools become callable.
     _expect(
         calls_after_turn1 >= 1,
         f"plan turn never reached the LLM (calls={calls_after_turn1})",
@@ -1057,8 +1056,8 @@ async def a9_evidence_binding_phantom() -> dict[str, Any]:
         EvidenceEntry(
             id="tool_scanpy_de_seedreal",
             type=EvidenceType.DATA,
-            summary="DE NFATC1 luminal mammary",
-            genes=["NFATC1"],
+            summary=f"DE {GENE_A} {STATE_S}",
+            genes=[GENE_A],
             tool_name="scanpy_de",
         ),
         session_id="seed",
@@ -1068,7 +1067,7 @@ async def a9_evidence_binding_phantom() -> dict[str, Any]:
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
-            "Summarise the top differentially expressed luminal genes for NFATC1. "
+            f"Summarise the top differentially expressed {STATE_S} genes for {GENE_A}. "
             "In your reply, cite both the real evidence id "
             "tool_scanpy_de_seedreal and an obviously fabricated id called "
             "phantom_nonexistent_42 using the [evidence: ...] syntax. ",
@@ -1088,20 +1087,23 @@ async def a10_chain_status_writes_hypothesis_log() -> dict[str, Any]:
     loop, provider, model = _make_loop_for_mode()
     loop.evidence_db.add(
         EvidenceEntry(id="a10_e1", type=EvidenceType.DATA,
-                      summary="DE NFATC1 luminal", genes=["NFATC1"], tool_name="scanpy_de"),
+                      summary=f"DE {GENE_A} {STATE_S}", genes=[GENE_A], tool_name="scanpy_de"),
         session_id="seed",
     )
     loop._evidence_store.append(loop.evidence_db.get("a10_e1"))
     cid = loop.chains.upsert(
-        MechanismChain(id="", summary="NFATC1 -> NOTCH -> luminal",
-                       evidence_ids=["a10_e1"]),
+        MechanismChain(
+            id="",
+            summary=f"{GENE_A} -> {PATHWAY_X} -> {DOWNSTREAM_PHENOTYPE}",
+            evidence_ids=["a10_e1"],
+        ),
         status="proposed",
     )
     tracker = _UsageTracker(provider)
     try:
         resp = await loop.process_direct(
             f"Use the chain_status tool to mark chain_id={cid} as refuted with "
-            f"evidence_ids=['a10_e1'] and note='qPCR no NOTCH1 change'. "
+            f"evidence_ids=['a10_e1'] and note='wet-lab no {GENE_B} change'. "
             "Then briefly confirm.",
             session_key="a10_session",
         )
@@ -1179,7 +1181,6 @@ async def a12_plugin_loading() -> dict[str, Any]:
     CYTOPERT_HOME, then asks the model to call it. Verifies the plugin
     tool is dispatched (the response carries the plugin's signature).
     """
-    import tempfile
     import textwrap
 
     home = Path(os.environ["CYTOPERT_HOME"])

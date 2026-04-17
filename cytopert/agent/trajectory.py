@@ -22,7 +22,6 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from cytopert.session.manager import Session
 from cytopert.utils.helpers import ensure_dir, get_data_path

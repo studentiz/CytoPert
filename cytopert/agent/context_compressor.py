@@ -200,8 +200,9 @@ class CytoPertCompressor(ContextEngine):
             import asyncio
 
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
             except RuntimeError:
+                # No running loop in this thread; safe to spin one up.
                 return asyncio.run(self._summarise_async(messages))
             # Running loop already; spin up a fresh loop in a thread so we
             # do not deadlock the caller.

@@ -10,7 +10,7 @@ import pytest
 
 from cytopert.agent.loop import AgentLoop, _extract_evidence_citations
 from cytopert.data.models import EvidenceEntry, EvidenceType
-from cytopert.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from cytopert.providers.base import LLMProvider, LLMResponse
 
 
 class _ScriptedProvider(LLMProvider):

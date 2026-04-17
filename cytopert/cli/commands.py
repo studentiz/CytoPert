@@ -656,7 +656,7 @@ def plugins_list() -> None:
     console.print(table)
 
 
-def _disabled_path() -> "Path":
+def _disabled_path():
     from pathlib import Path
 
     from cytopert.plugins.manager import DEFAULT_DISABLED_FILE

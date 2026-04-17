@@ -83,7 +83,7 @@ def test_setup_registers_tool_and_skips_disabled(tmp_path: Path) -> None:
     reg = ToolRegistry()
     mgr = PluginManager(user_dir=user_dir, project_dir=project)
     results = mgr.setup_all(_ctx_factory_for(reg, project))
-    enabled = {i.name for i in results if not i.enabled is False and i.tools_registered}
+    enabled = {i.name for i in results if i.enabled is not False and i.tools_registered}
     assert enabled == {"proj_plug"}
     assert "echo_proj_plug" in reg
     assert "echo_user_plug" not in reg
