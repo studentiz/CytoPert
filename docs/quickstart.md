@@ -101,10 +101,19 @@ Interactive:
 cytopert agent
 ```
 
-Interactive commands:
+Interactive commands (type `/help` to print the full list):
 
-- `/reset` -- clear history
-- `/exit` or `/quit` -- exit
+- `/help`             -- show every slash command
+- `/reset` or `/new`  -- clear conversation, re-arm the plan gate
+- `/skip-plan`        -- disable plan-gate for this session
+- `/model [name]`     -- switch model in-process
+- `/usage`            -- print this session's tokens / cost
+- `/history [N]`      -- print the last N user / assistant messages
+- `/skills`           -- list installed skills
+- `/chains`           -- list recent mechanism chains
+- `/retry`            -- re-send the last user message
+- `/undo`             -- drop the last user + assistant turn
+- `/exit` or `/quit`  -- exit
 
 ## Inspect persistent state
 
@@ -128,7 +137,61 @@ With feedback:
 cytopert run-workflow nfatc1_mammary --feedback "Experiment X refuted chain A."
 ```
 
-The pluggable `Pipeline` / `Stage` registry that lets third-party
-packages add their own scenarios is scheduled for stage 7.1; the CLI
-currently only routes `nfatc1_mammary` through the legacy single-stage
-pipeline.
+`cytopert run-workflow --help` lists every registered scenario name; new
+scenarios are loaded automatically from `cytopert.workflow.scenarios`
+and from any installed plugin that calls `register_scenario(...)` in
+its `setup` hook. See `docs/workflows.md` for the contract.
+
+## Profiles (isolated states)
+
+Each researcher / study can have its own root under
+`~/.cytopert/profiles/<name>/` with a complete tree of config, workspace,
+memory, chains, skills, sessions and `state.db`. Three ways to switch:
+
+```bash
+cytopert profile new study42                    # create
+cytopert -p study42 setup                       # initialise it
+cytopert -p study42 agent -m "..."              # one-shot override
+cytopert profile use study42                    # persist as default
+cytopert profile list                           # see all profiles
+```
+
+Switching profiles re-routes every command (`agent`, `chains`,
+`evidence`, `memory`, `skills`, `cron`, ...) to the selected directory
+without touching the default root.
+
+## Skills hub
+
+Beyond the bundled SKILL.md sheets, you can install user / community
+skills from local directories, archives, or git URLs:
+
+```bash
+cytopert skills search wilcoxon                  # name + description match
+cytopert skills install ./my-skill/              # local directory
+cytopert skills install ./my-skill.tar.gz        # .zip / .tar.gz / .tgz
+cytopert skills install https://github.com/owner/repo.git --name xyz
+cytopert skills uninstall xyz
+```
+
+`install` always lands the skill at `<profile>/skills/<category>/<name>/`
+so multiple profiles can hold disjoint skill libraries.
+
+## Cron-style scheduling
+
+`cytopert cron` lets you queue recurring agent runs without leaning on
+the host's cron / launchd:
+
+```bash
+cytopert cron add "every 30m" -m "Refresh CONTEXT.md from the latest evidence."
+cytopert cron add "daily" --scenario generic_de --feedback "Weekly QC."
+cytopert cron list                       # rich table with next-run timestamps
+cytopert cron tick --dry-run             # show what would run, do not run it
+cytopert cron tick                       # execute every due job once and exit
+cytopert cron daemon --interval 60       # run forever in 60s ticks (Ctrl+C to stop)
+cytopert cron disable myjob              # keep the entry but skip it
+cytopert cron remove myjob               # drop the entry
+```
+
+The schedule grammar is intentionally tiny: `every Ns/Nm/Nh/Nd`, plus the
+shorthand aliases `minutely` / `hourly` / `daily`. Job state lives at
+`<profile>/jobs.json`, so each profile owns an independent schedule.

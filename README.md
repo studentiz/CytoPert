@@ -74,6 +74,16 @@ cytopert onboard
 
 `onboard` creates `~/.cytopert/` with `config.json`, `workspace/`, `memory/`, `skills/` (seeded with the bundled SKILL.md sheets), and `chains/`.
 
+For first-time users, `cytopert setup` runs an interactive wizard
+(provider, API key, model, workspace) and includes a 1-token round-trip
+test before saving the config. Run `cytopert doctor` at any time for a
+PASS / WARN / FAIL health table covering profile, config, provider key,
+workspace writability, `state.db` + FTS5, bundled skills, plugins,
+scanpy, and decoupler. Multiple isolated environments live side-by-side
+under `~/.cytopert/profiles/<name>/`; switch with
+`cytopert -p <name> ...` (one-shot) or `cytopert profile use <name>`
+(persisted).
+
 ## LLM provider configuration
 
 CytoPert uses [LiteLLM](https://github.com/BerriAI/litellm) as the model client, so any OpenAI-compatible endpoint works. Open `~/.cytopert/config.json` and put your API key under one of the `providers.*` blocks. The first non-empty key wins (priority: `openrouter` → `deepseek` → `anthropic` → `openai` → `vllm`). Below are the four most common setups.
@@ -227,7 +237,16 @@ CollecTRI) is the production replacement.
     └── chain_<id>.jsonl       # per-chain audit trail
 ```
 
-`CYTOPERT_HOME` overrides the root, which is useful when you want one isolated state per project.
+`CYTOPERT_HOME` overrides the root, which is useful when you want one isolated state per project. See `cytopert profile --help` for the
+named-profile alternative (each profile owns a complete tree at
+`~/.cytopert/profiles/<name>/`, including its own `state.db`,
+`workspace/`, `skills/`, `chains/`, `sessions/`, and `jobs.json`).
+
+`cytopert cron` schedules recurring agent / scenario runs through the
+same `process_direct` / `Pipeline.run` paths the interactive shell
+uses (see `docs/quickstart.md` for the grammar). `cytopert skills
+install <git-url|archive|directory>` copies third-party skills into
+the active profile's `skills/` tree without leaving the CLI.
 
 ## Common pitfalls
 

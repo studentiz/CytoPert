@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from cytopert import __logo__, __version__
+from cytopert.cli.profiles import profile_app
 
 app = typer.Typer(
     name="cytopert",
@@ -30,7 +31,11 @@ config_app = typer.Typer(
     help="Quick get/set on individual config keys (no JSON editing required).",
     no_args_is_help=True,
 )
-from cytopert.cli.profiles import profile_app
+cron_app = typer.Typer(
+    name="cron",
+    help="Schedule recurring agent / workflow runs (jobs.json + tick / daemon).",
+    no_args_is_help=True,
+)
 
 app.add_typer(memory_app, name="memory")
 app.add_typer(skills_app, name="skills")
@@ -39,6 +44,7 @@ app.add_typer(evidence_app, name="evidence")
 app.add_typer(plugins_app, name="plugins")
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
+app.add_typer(cron_app, name="cron")
 
 console = Console()
 
@@ -330,13 +336,12 @@ def status() -> None:
     from cytopert.persistence.evidence_db import EvidenceDB
     from cytopert.skills.manager import SkillsManager
     from cytopert.utils.helpers import (
+        active_profile_name,
         get_chains_dir,
         get_memory_dir,
         get_skills_dir,
         get_state_db_path,
     )
-
-    from cytopert.utils.helpers import active_profile_name
 
     config_path = get_config_path()
     config = load_config()
@@ -881,6 +886,316 @@ def plugins_disable(name: str = typer.Argument(...)) -> None:
 def plugins_enable(name: str = typer.Argument(...)) -> None:
     """Re-enable a previously disabled plugin."""
     _toggle_disabled(name, disable=False)
+
+
+# ---------------------------------------------------------------------------
+# cron subcommands (stage 13a)
+# ---------------------------------------------------------------------------
+
+
+def _job_store():
+    from cytopert.scheduler.cron import JobStore, get_default_jobs_path
+
+    return JobStore(get_default_jobs_path())
+
+
+def _build_agent_loop_for_cron():
+    """Construct an AgentLoop bound to the active config + provider."""
+    from cytopert.agent.loop import AgentLoop
+    from cytopert.config.loader import load_config
+    from cytopert.providers.litellm_provider import LiteLLMProvider
+
+    cfg = load_config()
+    provider = LiteLLMProvider(
+        api_key=cfg.get_api_key(),
+        api_base=cfg.get_api_base(),
+        default_model=cfg.agents.defaults.model,
+        provider_type=cfg.get_provider_type(),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        workspace=cfg.workspace_path,
+        model=cfg.agents.defaults.model,
+        max_iterations=cfg.agents.defaults.max_tool_iterations,
+        max_tokens=cfg.agents.defaults.max_tokens,
+        temperature=cfg.agents.defaults.temperature,
+    )
+    return loop, cfg
+
+
+@cron_app.command("add")
+def cron_add(
+    schedule: str = typer.Argument(
+        ..., help="Schedule, e.g. 'every 30m', 'every 6h', 'hourly', 'daily'"
+    ),
+    message: str | None = typer.Option(
+        None, "--message", "-m", help="Free-text user message to send to the agent."
+    ),
+    scenario: str | None = typer.Option(
+        None, "--scenario", "-s", help="Workflow scenario name to run instead of a message."
+    ),
+    feedback: str | None = typer.Option(
+        None, "--feedback", "-f", help="Optional feedback string forwarded to reflection."
+    ),
+    job_id: str | None = typer.Option(
+        None, "--id", help="Stable job id (defaults to a random hex token)."
+    ),
+) -> None:
+    """Register a recurring job in the active profile's jobs.json."""
+    from cytopert.scheduler.cron import Job, parse_schedule
+
+    if (message is None) == (scenario is None):
+        console.print("[red]Provide exactly one of --message / --scenario[/red]")
+        raise typer.Exit(2)
+    try:
+        parse_schedule(schedule)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from None
+    job = Job.make(
+        schedule=schedule,
+        message=message,
+        scenario=scenario,
+        feedback=feedback,
+        job_id=job_id,
+    )
+    store = _job_store()
+    try:
+        store.add(job)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from None
+    target = scenario or (message or "")
+    console.print(
+        f"[green]\u2713[/green] Added job [bold]{job.id}[/bold] "
+        f"({schedule} -> {target[:60]}); next run [cyan]{job.next_run}[/cyan]"
+    )
+
+
+@cron_app.command("list")
+def cron_list() -> None:
+    """List all jobs in jobs.json with their next-run timestamps."""
+    from cytopert.scheduler.cron import synchronous_runner_for_message
+
+    store = _job_store()
+    jobs = store.load()
+    if not jobs:
+        console.print("[dim]No jobs scheduled. Add one with `cytopert cron add`.[/dim]")
+        return
+    table = Table(title="CytoPert cron", show_lines=False)
+    table.add_column("ID", style="bold")
+    table.add_column("Enabled")
+    table.add_column("Schedule")
+    table.add_column("Target")
+    table.add_column("Next run")
+    table.add_column("Last run")
+    table.add_column("Last status")
+    for j in jobs:
+        table.add_row(
+            j.id,
+            "[green]\u2713[/green]" if j.enabled else "[red]off[/red]",
+            j.schedule,
+            synchronous_runner_for_message(j.message or "", scenario=j.scenario),
+            j.next_run or "-",
+            j.last_run or "-",
+            j.last_status or "-",
+        )
+    console.print(table)
+
+
+@cron_app.command("remove")
+def cron_remove(job_id: str = typer.Argument(...)) -> None:
+    """Delete a job by id."""
+    store = _job_store()
+    if not store.remove(job_id):
+        console.print(f"[red]No such job: {job_id}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]\u2713[/green] Removed {job_id}.")
+
+
+@cron_app.command("enable")
+def cron_enable(job_id: str = typer.Argument(...)) -> None:
+    """Re-enable a previously disabled job."""
+    store = _job_store()
+    try:
+        store.set_enabled(job_id, True)
+    except KeyError:
+        console.print(f"[red]No such job: {job_id}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]\u2713[/green] Enabled {job_id}.")
+
+
+@cron_app.command("disable")
+def cron_disable(job_id: str = typer.Argument(...)) -> None:
+    """Disable a job (it will remain in jobs.json but not be picked up)."""
+    store = _job_store()
+    try:
+        store.set_enabled(job_id, False)
+    except KeyError:
+        console.print(f"[red]No such job: {job_id}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]\u2713[/green] Disabled {job_id}.")
+
+
+@cron_app.command("tick")
+def cron_tick(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print due jobs but do not run them."
+    ),
+) -> None:
+    """Run every due job exactly once and exit (use from system cron)."""
+    from cytopert.scheduler.cron import _utcnow, make_agent_runner, run_due_jobs
+
+    store = _job_store()
+    if dry_run:
+        now = _utcnow()
+        due = [j for j in store.load() if j.is_due(now=now)]
+        if not due:
+            console.print("[dim]No due jobs.[/dim]")
+            return
+        console.print(f"Would run {len(due)} job(s):")
+        for j in due:
+            console.print(f"  - {j.id} ({j.schedule}) next_run={j.next_run}")
+        return
+    loop, cfg = _build_agent_loop_for_cron()
+    runner = make_agent_runner(loop, config=cfg)
+    ran = asyncio.run(run_due_jobs(store, runner, on_progress=console.print))
+    if not ran:
+        console.print("[dim]No due jobs.[/dim]")
+        return
+    for j in ran:
+        colour = "green" if j.last_status == "ok" else "red"
+        console.print(
+            f"  [{colour}]{j.last_status}[/{colour}] {j.id} "
+            f"-> next {j.next_run} (err={j.last_error or '-'})"
+        )
+
+
+@cron_app.command("daemon")
+def cron_daemon(
+    interval: int = typer.Option(60, "--interval", "-i", help="Tick interval in seconds."),
+) -> None:
+    """Run the scheduler in a sleep loop until Ctrl+C."""
+    import asyncio
+
+    from cytopert.scheduler.cron import make_agent_runner, run_daemon
+
+    if interval < 5:
+        console.print("[red]--interval must be >= 5 seconds[/red]")
+        raise typer.Exit(2)
+    store = _job_store()
+    loop, cfg = _build_agent_loop_for_cron()
+    runner = make_agent_runner(loop, config=cfg)
+    console.print(
+        f"{__logo__} cron daemon starting (interval={interval}s; Ctrl+C to stop)"
+    )
+    stop_event = asyncio.Event()
+
+    async def _run() -> None:
+        await run_daemon(
+            store,
+            runner,
+            interval_seconds=interval,
+            stop_event=stop_event,
+            on_tick=lambda jobs: (
+                console.print(f"  ran {len(jobs)} job(s)") if jobs else None
+            ),
+        )
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        stop_event.set()
+        console.print("\n[yellow]daemon stopped[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# skills hub (stage 13b)
+# ---------------------------------------------------------------------------
+
+
+@skills_app.command("search")
+def skills_search(
+    query: str = typer.Argument(..., help="Substring matched against name + description."),
+    include_staged: bool = typer.Option(
+        False, "--include-staged", "-S", help="Also search staged skills."
+    ),
+) -> None:
+    """Search installed skills by name or description (case-insensitive)."""
+    mgr = _skills_manager()
+    skills = mgr.list(include_staged=include_staged)
+    q = query.lower()
+    hits = [
+        s for s in skills
+        if q in s.name.lower() or q in (s.description or "").lower()
+    ]
+    if not hits:
+        console.print(f"[dim]No skills matched {query!r}.[/dim]")
+        return
+    table = Table(title=f"Skills matching {query!r}")
+    table.add_column("Name", style="bold")
+    table.add_column("Category")
+    table.add_column("Description")
+    table.add_column("Path")
+    for s in hits:
+        table.add_row(s.name, s.category, s.description, str(s.path))
+    console.print(table)
+
+
+@skills_app.command("install")
+def skills_install(
+    source: str = typer.Argument(
+        ...,
+        help=(
+            "Source of the skill: an absolute / relative directory containing "
+            "SKILL.md, a .zip / .tar.gz archive, or a git URL "
+            "(detected by the .git suffix or a github.com / gitlab.com prefix)."
+        ),
+    ),
+    name: str | None = typer.Option(
+        None, "--name", help="Override the destination skill name (default: source basename)."
+    ),
+    category: str = typer.Option(
+        "user", "--category", "-c", help="Category subdirectory under skills/."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite an existing skill of the same name."
+    ),
+) -> None:
+    """Install a skill from a local path, archive, or git URL."""
+    from cytopert.skills.hub import install_from_source
+
+    mgr = _skills_manager()
+    try:
+        path = install_from_source(
+            mgr,
+            source=source,
+            name=name,
+            category=category,
+            force=force,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]\u2713[/green] Installed skill at {path}")
+
+
+@skills_app.command("uninstall")
+def skills_uninstall(
+    name: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Remove an installed skill (mirror of `skills delete`, kept for hub UX symmetry)."""
+    mgr = _skills_manager()
+    try:
+        mgr.view(name)  # existence probe
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    if not yes and not typer.confirm(f"Permanently delete skill {name!r}?"):
+        raise typer.Exit()
+    mgr.delete(name)
+    console.print(f"[green]\u2713[/green] Uninstalled {name}.")
 
 
 if __name__ == "__main__":
