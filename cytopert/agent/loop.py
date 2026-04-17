@@ -106,6 +106,55 @@ _PLAN_GATE_INSTRUCTION = (
     "will be discarded."
 )
 
+# Evidence binding enforcement.
+#
+# Any final reply that cites evidence MUST do so with the form
+# ``[evidence: id_a, id_b]`` or ``(evidence: id_c)``. The enforcer parses
+# all such citations out of the reply, looks each id up in the
+# EvidenceDB / in-process store, and -- if any id is missing -- runs a
+# single retry turn asking the model to fix its references using only
+# real ids. If the second attempt still mentions phantom ids, we leave
+# them in place but append a 'The following evidence ids were not found'
+# advisory so the user can react.
+_EVIDENCE_REF_RE = re.compile(
+    r"\[evidence:\s*([^\]]+)\]|\(evidence:\s*([^)]+)\)",
+    flags=re.IGNORECASE,
+)
+
+
+def _split_ids(raw: str) -> list[str]:
+    """Split a comma-separated id list and strip surrounding whitespace / quotes."""
+    out: list[str] = []
+    for token in raw.split(","):
+        cleaned = token.strip().strip("'\"")
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
+def _extract_evidence_citations(text: str | None) -> list[str]:
+    """Return every evidence id mentioned via ``[evidence: ...]`` / ``(evidence: ...)``."""
+    if not text:
+        return []
+    found: list[str] = []
+    for bracket, paren in _EVIDENCE_REF_RE.findall(text):
+        for eid in _split_ids(bracket or paren):
+            if eid not in found:
+                found.append(eid)
+    return found
+
+
+_EVIDENCE_BINDING_PROMPT = (
+    "## Evidence Binding (CytoPert hard constraint)\n"
+    "When you cite evidence in your final reply, use the form "
+    "`[evidence: id_a, id_b]` or `(evidence: id_c)`. "
+    "Every id you cite MUST exist in the evidence store -- the IDs "
+    "produced by tool calls follow the `tool_<tool_name>_<digest>` "
+    "shape (e.g. `tool_scanpy_de_3a4b5c6d7e`). Never invent an id; if "
+    "you do not have evidence for a claim, omit the citation rather "
+    "than fabricate one."
+)
+
 
 class AgentLoop:
     """Receive task -> build context -> call LLM -> execute tools -> reflect -> output."""
@@ -393,6 +442,18 @@ class AgentLoop:
             # without evidence the answer is not reproducible.
             final_content = self._append_evidence_gate(final_content, tool_results)
 
+        # Evidence binding enforcement runs after every successful turn.
+        # We always look the cited ids up in the live store so even
+        # zero-tool-call turns (where the model relied on the prompt's
+        # Evidence Summary) get a fact-check; the retry only fires when
+        # the model cited a non-existent id.
+        if final_content and not plan_active:
+            final_content = await self._enforce_evidence_binding(
+                final_content=final_content,
+                messages=messages,
+                tools_enabled=not plan_active,
+            )
+
         session.add_message("user", content)
         session.add_message("assistant", final_content)
         self.sessions.save(session)
@@ -510,6 +571,105 @@ class AgentLoop:
         )
         suffix = "\n\n---\n" + "\n\n".join(suffix_parts)
         return f"{head}{suffix}" if head else suffix.lstrip("\n-")
+
+    def _known_evidence_ids(self) -> set[str]:
+        """Set of evidence ids the agent is allowed to cite.
+
+        Pulls from both the in-process store (covers entries created in
+        the current turn before they have been persisted) and the
+        EvidenceDB recent slice (covers cross-session ids the prompt
+        backfill exposed). The DB read failure is logged and ignored so
+        the validator falls back to the in-process view when the database
+        is unavailable.
+        """
+        ids = {e.id for e in self._evidence_store if e and e.id}
+        try:
+            for entry in self.evidence_db.recent(limit=200):
+                if entry and entry.id:
+                    ids.add(entry.id)
+        except Exception as exc:
+            logger.debug("evidence_db.recent unavailable for binding check: %s", exc)
+        return ids
+
+    async def _enforce_evidence_binding(
+        self,
+        *,
+        final_content: str,
+        messages: list[dict[str, Any]],
+        tools_enabled: bool,
+    ) -> str:
+        """Check that every ``[evidence: id]`` citation resolves to a real id.
+
+        On the first miss, run a single follow-up ``provider.chat`` asking
+        the model to fix the references using only real ids. If the
+        retry still cites phantom ids, leave them in place but append a
+        plain-text advisory listing the missing ids so the user (and the
+        downstream reflection turn) can react.
+        """
+        cited = _extract_evidence_citations(final_content)
+        if not cited:
+            return final_content
+        known = self._known_evidence_ids()
+        missing = [eid for eid in cited if eid not in known]
+        if not missing:
+            return final_content
+
+        # Prepare a retry message that lists the offending ids and the
+        # ones the model could legitimately cite (capped to 30 to keep
+        # the prompt small).
+        usable_preview = list(known)[:30]
+        retry_user = (
+            "Your previous reply cited evidence ids that do not exist in the "
+            "evidence store: "
+            + ", ".join(missing)
+            + ".\n\nValid evidence ids you may cite include (truncated to 30): "
+            + (", ".join(usable_preview) if usable_preview else "(none)")
+            + ".\n\nPlease repeat the reply with the offending citations either "
+            "removed or replaced by real ids. Do not invent new ids."
+        )
+        retry_messages = list(messages) + [
+            {"role": "assistant", "content": final_content},
+            {"role": "user", "content": retry_user},
+        ]
+        try:
+            response = await self.provider.chat(
+                messages=retry_messages,
+                tools=None,  # binding-fix turn must not call tools
+                model=self.model,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+        except Exception as exc:
+            logger.warning("evidence binding retry call failed: %s", exc)
+            response = None
+
+        retried_content = (
+            response.content if response and response.content else None
+        )
+        if retried_content:
+            still_missing = [
+                eid
+                for eid in _extract_evidence_citations(retried_content)
+                if eid not in known
+            ]
+            if not still_missing:
+                return retried_content
+            # Retry still wrong; surface the diagnostic to the user.
+            advisory = (
+                "\n\n---\n[Evidence binding] The following cited ids do not "
+                "exist in the evidence store after one retry: "
+                + ", ".join(still_missing)
+                + ". Treat any conclusions that depend on them as unverified."
+            )
+            return retried_content + advisory
+        # Retry failed entirely; keep the original reply but add advisory.
+        advisory = (
+            "\n\n---\n[Evidence binding] The following cited ids could not be "
+            "found in the evidence store: "
+            + ", ".join(missing)
+            + ". Treat any conclusions that depend on them as unverified."
+        )
+        return final_content + advisory
 
     def enable_plan_gate(self, session_key: str) -> None:
         """Mark *session_key* as 'awaiting_plan' so the next turn is plan-only.

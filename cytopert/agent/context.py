@@ -46,10 +46,10 @@ class ContextBuilder:
     @staticmethod
     def _memory_block(snapshot: str) -> str:
         return (
-            "# Memory (frozen snapshot at session start)\n\n"
+            "# Memory (frozen snapshot, refreshed each user turn)\n\n"
             "These notes were curated by you across past sessions. They are read-only inside the\n"
-            "current turn — use the `memory` tool to add/replace/remove entries; changes take effect\n"
-            "next session.\n\n"
+            "current turn -- use the `memory` tool to add/replace/remove entries; changes take effect\n"
+            "at the start of the next user turn (this preserves the LLM prefix cache).\n\n"
             f"{snapshot}"
         )
 
@@ -89,6 +89,7 @@ You help researchers identify trigger state conditions and decisive regulatory n
 - Do NOT invent citations, datasets, or evidence IDs.
 - Only cite evidence IDs that actually exist in the evidence store or tool outputs.
 - If you lack evidence, say so and ask for the missing data or permission to run tools.
+- When you cite evidence in your final reply, use the form `[evidence: id_a, id_b]` or `(evidence: id_c)`. Real evidence ids follow the `tool_<tool_name>_<digest>` shape (e.g. `tool_scanpy_de_3a4b5c6d7e`). The evidence-binding enforcer parses these citations after every turn; phantom ids trigger a one-shot retry and may be flagged in the final response.
 """
 
     def _get_constraint_instructions(self) -> str:
