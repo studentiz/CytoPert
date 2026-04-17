@@ -88,4 +88,23 @@ class Config(BaseSettings):
             return self.providers.vllm.api_base
         return None
 
+    def get_provider_type(self) -> str | None:
+        """Identify the active provider (matches get_api_key priority).
+
+        Returns one of: 'openrouter' | 'deepseek' | 'anthropic' | 'openai' | 'vllm'.
+        This drives LiteLLM model prefixing (deepseek/, openrouter/, hosted_vllm/, etc.)
+        unambiguously instead of guessing from api_base substrings.
+        """
+        if self.providers.openrouter.api_key:
+            return "openrouter"
+        if self.providers.deepseek.api_key:
+            return "deepseek"
+        if self.providers.anthropic.api_key:
+            return "anthropic"
+        if self.providers.openai.api_key:
+            return "openai"
+        if self.providers.vllm.api_key:
+            return "vllm"
+        return None
+
     model_config = {"env_prefix": "CYTOPERT_", "env_nested_delimiter": "__"}

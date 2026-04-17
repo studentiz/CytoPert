@@ -27,9 +27,10 @@ def run(
     feedback: optional experiment feedback for next round (e.g. new evidence or refuted chain).
     Returns dict with response text and optional structured chains.
     """
-    from cytopert.config.loader import load_config
-    from cytopert.workflow.pipeline import run_one_round, get_scenario_config
     import asyncio
+
+    from cytopert.config.loader import load_config
+    from cytopert.workflow.pipeline import run_one_round
 
     config = load_config()
     sc = scenario_config or get_config()

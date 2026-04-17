@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 from cytopert.agent.tools.base import Tool
-from cytopert.data.census_client import get_anndata, get_obs, get_var, load_local_h5ad
+from cytopert.data.census_client import get_anndata, get_obs, load_local_h5ad
 
 
 async def _run_with_timeout(fn, timeout_seconds: int, **kwargs: Any) -> Any:

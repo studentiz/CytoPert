@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+
 def open_census(version: str | None = None):  # noqa: ANN201
     """Open the Census (SOMA). Returns context manager or census object per cellxgene_census API."""
     try:

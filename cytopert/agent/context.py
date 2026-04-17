@@ -1,4 +1,20 @@
-"""Context builder for assembling agent prompts."""
+"""Context builder for assembling agent prompts.
+
+The system prompt is composed at session start (or each ``build_messages`` call)
+from these blocks, in order:
+
+1. Identity (static)
+2. Memory snapshot — frozen at the moment of building (MemoryStore.render_snapshot())
+3. Skills index — Level 0 only (name + description + category)
+4. Evidence summary — recent EvidenceEntries
+5. Constraint instructions (static)
+
+In-session updates to memory / skills are persisted immediately by the relevant
+tools but are NOT re-rendered into the live ``messages`` list — that would break
+LLM prefix caching. They take effect on the next ``build_messages`` call.
+"""
+
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
@@ -10,13 +26,41 @@ class ContextBuilder:
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
 
-    def build_system_prompt(self, evidence_summary: str | None = None) -> str:
-        """Build the system prompt including evidence and constraint instructions."""
-        parts = [self._get_identity()]
+    def build_system_prompt(
+        self,
+        evidence_summary: str | None = None,
+        memory_snapshot: str | None = None,
+        skills_index: str | None = None,
+    ) -> str:
+        """Build the system prompt with the four optional blocks."""
+        parts: list[str] = [self._get_identity()]
+        if memory_snapshot:
+            parts.append(self._memory_block(memory_snapshot))
+        if skills_index:
+            parts.append(self._skills_block(skills_index))
         if evidence_summary:
             parts.append(f"# Evidence Summary\n\n{evidence_summary}")
         parts.append(self._get_constraint_instructions())
         return "\n\n---\n\n".join(parts)
+
+    @staticmethod
+    def _memory_block(snapshot: str) -> str:
+        return (
+            "# Memory (frozen snapshot at session start)\n\n"
+            "These notes were curated by you across past sessions. They are read-only inside the\n"
+            "current turn — use the `memory` tool to add/replace/remove entries; changes take effect\n"
+            "next session.\n\n"
+            f"{snapshot}"
+        )
+
+    @staticmethod
+    def _skills_block(index: str) -> str:
+        return (
+            "# Skills (Level 0 index)\n\n"
+            "Each line is a CytoPert procedural-memory entry. Use `skill_view(name)` to load the\n"
+            "full SKILL.md when relevant; create / patch / accept new skills via `skill_manage`.\n\n"
+            f"{index}"
+        )
 
     def _get_identity(self) -> str:
         return """# CytoPert 🧬
@@ -33,8 +77,13 @@ You help researchers identify trigger state conditions and decisive regulatory n
 ## Tool Use
 - If data is needed, call `census_query` (for cellxgene Census) or `load_local_h5ad` (for local h5ad).
 - If analysis is needed, use scanpy/pertpy/decoupler tools rather than describing steps abstractly.
+- Before re-running an analysis you may have done before, call `evidence_search` to check whether prior evidence already exists across sessions.
 - After tool calls, summarize results and state next steps or ask for confirmation.
 - If the user explicitly requests a specific tool call, you MUST call that tool with the given parameters.
+- Persist mechanism chains via the `chains` tool and update their lifecycle via `chain_status` (proposed/supported/refuted/superseded).
+
+## Self-Improvement Loop
+- When you complete a non-trivial workflow, the agent runs a brief reflection turn that may write to memory or stage a new skill (under `~/.cytopert/skills/.staged/`). The user can promote staged skills with `cytopert skills accept <name>`.
 
 ## Evidence Integrity
 - Do NOT invent citations, datasets, or evidence IDs.
@@ -47,6 +96,7 @@ You help researchers identify trigger state conditions and decisive regulatory n
 - Only reason within the given pathway hierarchy and regulatory network topology.
 - Each key conclusion must reference an evidence entry ID (data or knowledge).
 - Output mechanism chains with verification readouts and priority (e.g. P1/P2) when requested.
+- When updating memory or proposing a new skill, keep entries compact (the system enforces character limits).
 """
 
     def build_messages(
@@ -54,10 +104,16 @@ You help researchers identify trigger state conditions and decisive regulatory n
         history: list[dict[str, Any]],
         current_message: str,
         evidence_summary: str | None = None,
+        memory_snapshot: str | None = None,
+        skills_index: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         messages = []
-        system_prompt = self.build_system_prompt(evidence_summary)
+        system_prompt = self.build_system_prompt(
+            evidence_summary=evidence_summary,
+            memory_snapshot=memory_snapshot,
+            skills_index=skills_index,
+        )
         messages.append({"role": "system", "content": system_prompt})
         messages.extend(history)
         messages.append({"role": "user", "content": current_message})

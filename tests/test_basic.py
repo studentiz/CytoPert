@@ -1,8 +1,7 @@
 """Basic tests for CytoPert."""
 
-import pytest
 
-from cytopert import __version__, __logo__
+from cytopert import __logo__, __version__
 
 
 def test_version() -> None:
@@ -31,8 +30,8 @@ def test_evidence_models() -> None:
 
 
 def test_tool_registry() -> None:
-    from cytopert.agent.tools.registry import ToolRegistry
     from cytopert.agent.tools.evidence import EvidenceTool
+    from cytopert.agent.tools.registry import ToolRegistry
     reg = ToolRegistry()
     reg.register(EvidenceTool())
     assert "evidence" in reg.tool_names

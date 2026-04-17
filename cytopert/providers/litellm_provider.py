@@ -8,6 +8,47 @@ from litellm import acompletion
 
 from cytopert.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
+_KNOWN_PROVIDERS = {"openrouter", "deepseek", "anthropic", "openai", "vllm"}
+
+# LiteLLM model prefixes per provider. None = no prefix needed (e.g. anthropic
+# / openai pick up the model name natively via env vars).
+_MODEL_PREFIX = {
+    "openrouter": "openrouter/",
+    "deepseek": "deepseek/",
+    "vllm": "hosted_vllm/",
+    "openai": "openai/",
+    "anthropic": "",
+}
+
+_API_KEY_ENV = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "vllm": "OPENAI_API_KEY",
+}
+
+
+def _infer_provider(api_key: str | None, api_base: str | None, model: str) -> str:
+    """Best-effort provider inference when caller didn't pass provider_type.
+
+    Kept conservative because misclassification used to assign ``hosted_vllm/``
+    to DeepSeek-via-OpenAI-compat (B1).
+    """
+    base = (api_base or "").lower()
+    mdl = (model or "").lower()
+    if (api_key or "").startswith("sk-or-") or "openrouter" in base:
+        return "openrouter"
+    if "deepseek" in base or mdl.startswith("deepseek/") or "deepseek" in mdl:
+        return "deepseek"
+    if base:
+        return "openai"
+    if "anthropic" in mdl or "claude" in mdl:
+        return "anthropic"
+    if "gpt" in mdl or "openai" in mdl:
+        return "openai"
+    return "openai"
+
 
 class LiteLLMProvider(LLMProvider):
     """LLM provider using LiteLLM (OpenRouter, Anthropic, OpenAI, vLLM, etc.)."""
@@ -17,29 +58,33 @@ class LiteLLMProvider(LLMProvider):
         api_key: str | None = None,
         api_base: str | None = None,
         default_model: str = "anthropic/claude-sonnet-4-20250514",
+        provider_type: str | None = None,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
-        self.is_openrouter = (api_key and api_key.startswith("sk-or-")) or (
-            api_base and "openrouter" in (api_base or "")
-        )
-        self.is_vllm = bool(api_base) and not self.is_openrouter and "dashscope" not in (api_base or "")
-        self.is_openai_compat = bool(api_base) and not self.is_openrouter and not self.is_vllm
+        if provider_type and provider_type not in _KNOWN_PROVIDERS:
+            raise ValueError(
+                f"Unknown provider_type {provider_type!r}; expected one of {_KNOWN_PROVIDERS}"
+            )
+        self.provider_type = provider_type or _infer_provider(api_key, api_base, default_model)
         if api_key:
-            if self.is_openrouter:
-                os.environ["OPENROUTER_API_KEY"] = api_key
-            elif self.is_vllm or self.is_openai_compat:
-                os.environ["OPENAI_API_KEY"] = api_key
-            elif "deepseek" in default_model:
-                os.environ.setdefault("DEEPSEEK_API_KEY", api_key)
-            elif "anthropic" in default_model:
-                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
-            elif "openai" in default_model or "gpt" in default_model:
-                os.environ.setdefault("OPENAI_API_KEY", api_key)
+            os.environ.setdefault(_API_KEY_ENV[self.provider_type], api_key)
+            if self.provider_type in {"openrouter", "openai", "vllm"}:
+                os.environ[_API_KEY_ENV[self.provider_type]] = api_key
         if api_base:
             import litellm
             litellm.api_base = api_base
             litellm.suppress_debug_info = True
+
+    def _prefixed(self, model: str) -> str:
+        prefix = _MODEL_PREFIX.get(self.provider_type, "")
+        if not prefix or model.startswith(prefix):
+            return model
+        if "/" in model and self.provider_type == "openrouter":
+            return f"openrouter/{model}"
+        if "/" in model and self.provider_type != "openrouter":
+            return model
+        return f"{prefix}{model}"
 
     async def chat(
         self,
@@ -49,13 +94,7 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> LLMResponse:
-        model = model or self.default_model
-        if self.is_openrouter and not model.startswith("openrouter/"):
-            model = f"openrouter/{model}"
-        if self.is_vllm:
-            model = f"hosted_vllm/{model}"
-        if self.is_openai_compat and not model.startswith("openai/"):
-            model = f"openai/{model}"
+        model = self._prefixed(model or self.default_model)
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,

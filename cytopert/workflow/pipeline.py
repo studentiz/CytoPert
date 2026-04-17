@@ -1,11 +1,10 @@
 """Single-round pipeline: plan -> confirm -> compute -> evidence -> reasoning -> mechanism chains + verification."""
 
-from pathlib import Path
 from typing import Any
 
+from cytopert.agent.loop import AgentLoop
 from cytopert.config.schema import Config
 from cytopert.providers.litellm_provider import LiteLLMProvider
-from cytopert.agent.loop import AgentLoop
 
 
 async def run_one_round(
@@ -23,6 +22,7 @@ async def run_one_round(
         api_key=config.get_api_key(),
         api_base=config.get_api_base(),
         default_model=config.agents.defaults.model,
+        provider_type=config.get_provider_type(),
     )
     agent = AgentLoop(
         provider=provider,
