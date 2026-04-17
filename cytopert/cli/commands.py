@@ -135,9 +135,18 @@ def agent(
         asyncio.run(run_once())
     else:
         console.print(f"{__logo__} Interactive mode (Ctrl+C to exit)\n")
-        console.print("[dim]Commands: /exit, /quit, /reset (clear history)[/dim]\n")
+        console.print(
+            "[dim]Commands: /exit, /quit, /reset (clear history), "
+            "/skip-plan (allow tool calls without 'go')[/dim]\n"
+        )
+        # Interactive sessions start in plan-then-execute mode: the first
+        # turn produces a textual plan only and tool calls are gated until
+        # the researcher types 'go'. Use /skip-plan to disable it for
+        # casual chitchat sessions.
+        agent_loop.enable_plan_gate(session_id)
 
         async def run_interactive() -> None:
+            nonlocal feedback
             while True:
                 try:
                     user_input = console.input("[bold blue]You:[/bold blue] ")
@@ -149,7 +158,19 @@ def agent(
                         break
                     if command in {"/reset", "/new"}:
                         agent_loop.sessions.reset(session_id)
-                        console.print("[green]✓[/green] Session cleared.")
+                        agent_loop.enable_plan_gate(session_id)
+                        console.print("[green]\u2713[/green] Session cleared; plan gate re-armed.")
+                        continue
+                    if command == "/skip-plan":
+                        sess = agent_loop.sessions.get_or_create(session_id)
+                        from cytopert.agent.loop import (
+                            PLAN_MODE_DISABLED,
+                            PLAN_MODE_KEY,
+                        )
+
+                        sess.metadata[PLAN_MODE_KEY] = PLAN_MODE_DISABLED
+                        agent_loop.sessions.save(sess)
+                        console.print("[green]\u2713[/green] Plan gate disabled for this session.")
                         continue
                     # --feedback only applies to the first turn (matching
                     # the workflow scenario semantics); subsequent

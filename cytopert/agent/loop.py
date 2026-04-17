@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from cytopert.agent.context import ContextBuilder
+from cytopert.agent.context_compressor import CytoPertCompressor
+from cytopert.agent.context_engine import ContextEngine
 from cytopert.agent.tools.census import CensusQueryTool, LoadLocalH5adTool
 from cytopert.agent.tools.chain_status import ChainStatusTool
 from cytopert.agent.tools.chains import ChainsTool
@@ -68,6 +70,42 @@ _RESEARCH_KEYWORDS = (
     "perturbation distance", "trajectory", "cluster markers",
 )
 
+# Plan-before-execute state machine.
+#
+# Interactive sessions (``cytopert agent`` without ``-m``) start in
+# ``awaiting_plan``; the agent is told via the system prompt to output a
+# textual plan only and any ``tool_calls`` returned in the first turn are
+# discarded. The user moves the session to ``executing`` by typing one of
+# ``GO_PHRASES`` (case-insensitive). One-shot ``-m`` invocations skip the
+# gate entirely because there is no second turn to authorise execution.
+PLAN_MODE_KEY = "plan_mode"
+PLAN_MODE_AWAITING = "awaiting_plan"
+PLAN_MODE_EXECUTING = "executing"
+PLAN_MODE_DISABLED = "disabled"
+
+GO_PHRASES = (
+    "go", "go!", "go.", "execute", "run it", "run", "approve", "approved",
+    "confirm", "confirmed", "proceed", "yes", "yep", "ok", "okay", "lgtm",
+)
+
+
+def _is_go_phrase(message: str) -> bool:
+    """Return True iff *message* (after stripping) is a plain go-signal."""
+    if not message:
+        return False
+    cleaned = message.strip().rstrip(".!?,").lower()
+    return cleaned in GO_PHRASES
+
+
+_PLAN_GATE_INSTRUCTION = (
+    "## Plan Gate (active)\n"
+    "This session is in PLAN mode. For THIS turn only, output a numbered "
+    "execution plan in plain text. Do NOT call any tools yet -- wait for "
+    "the researcher to type 'go' (or 'execute' / 'approve') in the next "
+    "turn before invoking any tool. Tool calls emitted during this turn "
+    "will be discarded."
+)
+
 
 class AgentLoop:
     """Receive task -> build context -> call LLM -> execute tools -> reflect -> output."""
@@ -85,6 +123,7 @@ class AgentLoop:
         enable_reflection: bool = True,
         max_tokens: int = 8192,
         temperature: float = 0.3,
+        context_engine: ContextEngine | None = None,
     ) -> None:
         self.provider = provider
         self.workspace = workspace
@@ -104,6 +143,15 @@ class AgentLoop:
         self.evidence_db = evidence_db or EvidenceDB(get_state_db_path())
         self.chains = chain_store or ChainStore(get_state_db_path(), get_chains_dir())
         self.enable_reflection = enable_reflection
+
+        # Default ContextEngine summarises the middle of long conversations
+        # with the same provider/model as the main loop. Callers can swap
+        # in their own engine (or pass None to disable compression) via
+        # the ``context_engine`` constructor kwarg or the
+        # ``set_context_engine`` setter.
+        self.context_engine: ContextEngine | None = context_engine or CytoPertCompressor(
+            provider=self.provider, model=self.model
+        )
 
         try:
             self.skills.install_bundled()
@@ -171,6 +219,21 @@ class AgentLoop:
         LLM can decide whether to update memory or transition a chain.
         """
         session = self.sessions.get_or_create(session_key)
+        if self.context_engine is not None:
+            # First time we see this session in this process -- let the
+            # engine seed any per-session counters / DB connections.
+            try:
+                self.context_engine.on_session_start(session_key)
+            except Exception as exc:
+                logger.debug("context_engine.on_session_start failed: %s", exc)
+
+        # Plan-Gate: decide whether tool calls are allowed in this turn.
+        plan_state = session.metadata.get(PLAN_MODE_KEY, PLAN_MODE_DISABLED)
+        if plan_state == PLAN_MODE_AWAITING and _is_go_phrase(content):
+            session.metadata[PLAN_MODE_KEY] = PLAN_MODE_EXECUTING
+            plan_state = PLAN_MODE_EXECUTING
+        plan_active = plan_state == PLAN_MODE_AWAITING
+
         evidence_summary = (
             build_evidence_summary(self._evidence_store) if self._evidence_store else None
         )
@@ -184,6 +247,11 @@ class AgentLoop:
             memory_snapshot=memory_snapshot,
             skills_index=skills_index,
         )
+        if plan_active:
+            # Append the gate instruction as an extra system message so the
+            # cached system prefix is preserved (LLM prefix caching is the
+            # main reason ContextBuilder freezes the system prompt).
+            messages.append({"role": "system", "content": _PLAN_GATE_INSTRUCTION})
         iteration = 0
         final_content = None
         tools_used = False
@@ -234,7 +302,23 @@ class AgentLoop:
         else:
             while iteration < self.max_iterations:
                 iteration += 1
-                tool_defs = self.tools.get_definitions()
+                # Pre-call compaction: ask the engine whether to run a
+                # post-call compression decision after the next response.
+                # We always offer the engine a peek at the messages before
+                # the call so a future engine can do a cheap estimate.
+                if self.context_engine is not None:
+                    try:
+                        if self.context_engine.should_compress_preflight(messages):
+                            messages = self.context_engine.compress(messages)
+                    except Exception as exc:
+                        logger.warning(
+                            "context_engine pre-flight compress failed: %s", exc
+                        )
+                # Plan gate: hide the tool catalog so even if the model
+                # ignores the system instruction it has nothing to call.
+                tool_defs = (
+                    [] if plan_active else self.tools.get_definitions()
+                )
                 response = await self.provider.chat(
                     messages=messages,
                     tools=tool_defs if tool_defs else None,
@@ -242,6 +326,22 @@ class AgentLoop:
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                 )
+                if self.context_engine is not None and response.usage:
+                    try:
+                        self.context_engine.update_from_response(response.usage)
+                        if self.context_engine.should_compress():
+                            messages = self.context_engine.compress(messages)
+                    except Exception as exc:
+                        logger.warning("context_engine post-call step failed: %s", exc)
+                if plan_active and response.has_tool_calls:
+                    # Discard tool calls emitted during plan turn; surface
+                    # the plan text the model produced as the final reply.
+                    final_content = (
+                        (response.content or "").strip()
+                        + "\n\n[PlanGate] Tool calls were suppressed; "
+                        "reply 'go' (or 'execute' / 'approve') to authorise execution."
+                    )
+                    break
                 if response.has_tool_calls:
                     tools_used = True
                     tool_call_dicts = [
@@ -336,6 +436,15 @@ class AgentLoop:
                 logger.warning(
                     "evidence_db.add failed for %s (%s): %s", entry.id, tool_name, exc
                 )
+            # Tell the context engine to keep the tool-result message
+            # carrying this evidence id verbatim through any future
+            # compression -- otherwise downstream chains that cite the
+            # id would lose their primary source.
+            if self.context_engine is not None:
+                try:
+                    self.context_engine.protect_evidence(entry.id)
+                except Exception as exc:
+                    logger.debug("context_engine.protect_evidence failed: %s", exc)
 
         if tool_name in {"chains", "chain_status"}:
             try:
@@ -401,6 +510,24 @@ class AgentLoop:
         )
         suffix = "\n\n---\n" + "\n\n".join(suffix_parts)
         return f"{head}{suffix}" if head else suffix.lstrip("\n-")
+
+    def enable_plan_gate(self, session_key: str) -> None:
+        """Mark *session_key* as 'awaiting_plan' so the next turn is plan-only.
+
+        Called by the interactive CLI on session start. ``-m`` (one-shot)
+        callers should not use this because there is no follow-up turn to
+        carry the ``go`` signal.
+        """
+        session = self.sessions.get_or_create(session_key)
+        if session.metadata.get(PLAN_MODE_KEY) != PLAN_MODE_EXECUTING:
+            session.metadata[PLAN_MODE_KEY] = PLAN_MODE_AWAITING
+            self.sessions.save(session)
+
+    def reset_plan_gate(self, session_key: str) -> None:
+        """Re-arm the plan gate after a ``/reset`` so the next turn plans again."""
+        session = self.sessions.get_or_create(session_key)
+        session.metadata[PLAN_MODE_KEY] = PLAN_MODE_AWAITING
+        self.sessions.save(session)
 
     @staticmethod
     def _is_research_conclusion(message: str) -> bool:
