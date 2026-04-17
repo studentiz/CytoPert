@@ -25,6 +25,16 @@ def _row(level: str, name: str, detail: str) -> tuple[str, str, str]:
     return (level, name, detail)
 
 
+def _check_profile() -> tuple[str, str, str]:
+    from cytopert.utils.helpers import active_profile_name, get_data_path
+
+    name = active_profile_name()
+    home = get_data_path()
+    if name:
+        return _row("PASS", "profile", f"{name} (root={home})")
+    return _row("PASS", "profile", f"default root ({home})")
+
+
 def _check_config() -> tuple[str, str, str]:
     from cytopert.config.loader import get_config_path, load_config
 
@@ -235,6 +245,7 @@ def run_doctor(*, ping: bool = False, console: Console | None = None) -> int:
     console = console or Console()
     rows: list[tuple[str, str, str]] = []
 
+    rows.append(_check_profile())
     rows.append(_check_config())
     rows.append(_check_provider())
     rows.append(_check_workspace_writable())

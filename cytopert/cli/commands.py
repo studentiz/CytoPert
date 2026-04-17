@@ -30,12 +30,15 @@ config_app = typer.Typer(
     help="Quick get/set on individual config keys (no JSON editing required).",
     no_args_is_help=True,
 )
+from cytopert.cli.profiles import profile_app
+
 app.add_typer(memory_app, name="memory")
 app.add_typer(skills_app, name="skills")
 app.add_typer(chains_app, name="chains")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(plugins_app, name="plugins")
 app.add_typer(config_app, name="config")
+app.add_typer(profile_app, name="profile")
 
 console = Console()
 
@@ -49,9 +52,29 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def main(
     version: bool = typer.Option(None, "--version", "-v", callback=_version_callback, is_eager=True),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        "-p",
+        help=(
+            "Switch to a named profile for THIS process only. Equivalent "
+            "to setting CYTOPERT_HOME=~/.cytopert/profiles/<name>. The "
+            "directory is created on demand. Persist the choice across "
+            "invocations with `cytopert profile use <name>`."
+        ),
+    ),
 ) -> None:
-    """CytoPert - Interactive framework for cell perturbation mechanism parsing."""
-    pass
+    """CytoPert - Interactive framework for single-cell perturbation analysis."""
+    if profile:
+        # Look the constants up via the module object so test
+        # monkeypatching of ``cytopert.utils.helpers.CYTOPERT_ROOT_DIR``
+        # propagates here. ``from helpers import X`` would freeze X to
+        # the original value at the time of the ``from`` statement.
+        from cytopert.utils import helpers as hh
+
+        target = hh.CYTOPERT_ROOT_DIR / hh.PROFILES_SUBDIR / profile
+        hh.ensure_dir(target)
+        os.environ["CYTOPERT_HOME"] = str(target)
 
 
 @app.command()
@@ -313,10 +336,17 @@ def status() -> None:
         get_state_db_path,
     )
 
+    from cytopert.utils.helpers import active_profile_name
+
     config_path = get_config_path()
     config = load_config()
     workspace = config.workspace_path
     console.print(f"{__logo__} CytoPert Status\n")
+    profile = active_profile_name()
+    if profile:
+        console.print(f"Profile: [bold]{profile}[/bold]")
+    else:
+        console.print("Profile: [dim]default root[/dim]")
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
     if config_path.exists():
